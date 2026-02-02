@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+
 
 // --- HELPERS ---
 const createThickFrame = (size = 0.5) => {
@@ -83,6 +85,54 @@ const App = () => {
   const wigWagRef = useRef(new THREE.Group());
   const cArmSlideRef = useRef(new THREE.Group());
   const beamRef = useRef(null);
+
+
+////////////////////////EXPORT////////////////////
+// ---- GLB EXPORT HELPERS ----
+function downloadArrayBuffer(buffer, filename) {
+  const blob = new Blob([buffer], { type: "application/octet-stream" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function exportGLB(object3D, filename = "carm.glb") {
+  if (!object3D) {
+    alert("Nothing to export yet (object is null). Try again after the scene loads.");
+    return;
+  }
+
+  // Make sure world matrices are updated
+  object3D.updateMatrixWorld(true);
+
+  const exporter = new GLTFExporter();
+  exporter.parse(
+    object3D,
+    (result) => {
+      // When binary:true, result is an ArrayBuffer
+      downloadArrayBuffer(result, filename);
+    },
+    (error) => {
+      console.error("GLB export error:", error);
+      alert("Export failed. Check the console for details.");
+    },
+    {
+      binary: true,       // <-- makes .glb (single file)
+      onlyVisible: true,
+      embedImages: true,
+    }
+  );
+}
+
+// Export only the C-arm machine (your cartRoot)
+const handleExportCarm = () => {
+  exportGLB(cartRef.current, "carm.glb");
+};
+
+////////////////////////EXPORT////////////////////
+
 
   const handleTakeXray = () => {
     setBeamActive(true);
@@ -419,6 +469,26 @@ const App = () => {
              <button onClick={handleTakeXray} style={{ width: '100%', padding: '12px', backgroundColor: beamActive ? '#ff0000' : '#333', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', transition: 'background 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                  <span style={{ fontSize: '16px' }}>☢</span> TAKE X-RAY
              </button>
+
+             ///////////EXPORT BUTTON/////
+             <button
+                onClick={handleExportCarm}
+                style={{
+                  width: "100%",
+                  padding: "12px",
+                  backgroundColor: "#0b5",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "8px",
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  marginTop: "10px"
+                }}
+              >
+                ⬇ Export C-Arm (GLB)
+              </button>
+             /////////////////////////////
+             
          </div>
       </div>
     </div>
