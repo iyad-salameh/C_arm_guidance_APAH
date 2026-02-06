@@ -6,7 +6,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 // --- CONFIGURATION ---
 // 1. UPDATED URL: Using the RAW GitHub link for your specific model
-const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/human-rigged.glb';
+const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb';
 
 // --- MAIN APP ---
 const App = () => {
