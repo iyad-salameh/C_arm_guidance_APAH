@@ -5,34 +5,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 // --- CONFIGURATION ---
-// REPLACE THIS URL WITH YOUR OWN GLB MODEL URL
-const PATIENT_URL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/models/gltf/Xbot.glb';
-
-// --- HELPERS ---
-const createThickFrame = (size = 0.5) => {
-  const group = new THREE.Group();
-  const axisRadius = size * 0.04;
-  const headRadius = size * 0.08;
-  const headLength = size * 0.2;
-  const shaftLength = size * 0.8;
-
-  const createArrow = (color, rot) => {
-    const arrowGroup = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: color, roughness: 0.3 });
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(axisRadius, axisRadius, shaftLength, 16), mat);
-    shaft.position.y = shaftLength / 2;
-    arrowGroup.add(shaft);
-    const head = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLength, 16), mat);
-    head.position.y = shaftLength + headLength / 2;
-    arrowGroup.add(head);
-    if (rot) arrowGroup.rotation.set(...rot);
-    return arrowGroup;
-  }
-  group.add(createArrow(0x00ff00, [0, 0, 0])); // Y
-  group.add(createArrow(0xff0000, [0, 0, -Math.PI / 2])); // X
-  group.add(createArrow(0x0000ff, [Math.PI / 2, 0, 0])); // Z
-  return group;
-};
+// 1. UPDATED URL: Using the RAW GitHub link for your specific model
+const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/human-rigged.glb';
 
 // --- MAIN APP ---
 const App = () => {
@@ -182,47 +156,63 @@ const App = () => {
         leg.castShadow = true;
         bedGroup.add(leg);
     });
-
-    const bedFrame = createThickFrame(0.4);
-    bedFrame.position.set(0, 1.4, 0); 
-    bedGroup.add(bedFrame);
     
     // --- LOAD GLB PATIENT ---
     const loader = new GLTFLoader();
-    loader.load(
-        PATIENT_URL, 
-        (gltf) => {
-            const model = gltf.scene;
-            
-            // CONFIGURATION FOR PATIENT MODEL
-            // 1. Scale to human size (approx 1.7m tall)
-            // 2. Rotate to lay on back (-90 deg on X usually)
-            // 3. Position on top of bed (y = 1.38 + 0.18 = 1.56)
-            // 4. Centered on table at the arrow origin (0,0)
-            
-            model.scale.set(1.0, 1.0, 1.0); 
-            model.rotation.set(-Math.PI / 2, 0, Math.PI); // Facing up, feet towards +Z
-            // Moved patient to origin of XYZ arrows (0, 0)
-            model.position.set(0, 1.45, -1.0); 
-             
-
-            // Enable shadows
-            model.traverse((node) => {
-                if (node.isMesh) {
-                    node.castShadow = true;
-                    node.receiveShadow = true;
+    if (PATIENT_URL) {
+        loader.load(
+            PATIENT_URL, 
+            (gltf) => {
+                const model = gltf.scene;
+                
+                // --- DYNAMIC SCALING (To 1.7m) ---
+                const box = new THREE.Box3().setFromObject(model);
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                
+                const maxDim = Math.max(size.x, size.y, size.z); 
+                
+                if (maxDim > 0) {
+                    const desiredHeight = 1.7; 
+                    const scaleFactor = desiredHeight / maxDim;
+                    model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                } else {
+                    model.scale.set(1.0, 1.0, 1.0); // Fallback
                 }
-            });
 
-            bedGroup.add(model);
-            setModelLoading(false);
-        },
-        undefined,
-        (error) => {
-            console.error('An error occurred loading the model:', error);
-            setModelLoading(false);
-        }
-    );
+                // --- ORIENTATION & POSITION ---
+                model.rotation.set(-Math.PI / 2, 0, Math.PI); 
+                model.position.set(0, 1.45, -1.0); 
+
+                // --- MATERIAL OVERRIDE: WHITE PHANTOM LOOK ---
+                model.traverse((node) => {
+                    if (node.isMesh) {
+                        node.castShadow = true;
+                        node.receiveShadow = true;
+                        
+                        // Replace original material with White Standard Material
+                        node.material = new THREE.MeshStandardMaterial({
+                            color: 0xffffff,
+                            roughness: 0.5,
+                            metalness: 0.1,
+                            skinning: node.isSkinnedMesh // Important if the model is rigged
+                        });
+                    }
+                });
+
+                bedGroup.add(model);
+                setModelLoading(false);
+            },
+            undefined,
+            (error) => {
+                console.warn('Could not load patient model. Using fallback URL might help.');
+                console.error(error);
+                setModelLoading(false);
+            }
+        );
+    } else {
+        setModelLoading(false);
+    }
 
     // --- ROBOT CART ---
     const cartRoot = new THREE.Group();
@@ -319,10 +309,6 @@ const App = () => {
     const detFace = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.01, 32), new THREE.MeshStandardMaterial({ color: 0x111111 }));
     detFace.position.y = 0.30; 
     detHousing.add(detFace);
-
-    const armFrame = createThickFrame(0.4);
-    armFrame.position.y = 0.3; 
-    detHousing.add(armFrame);
 
     // DETECTOR ANCHOR
     const detAnchor = detAnchorRef.current;
