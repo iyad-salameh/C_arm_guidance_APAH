@@ -5,22 +5,24 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 // --- CONFIGURATION ---
-// 1. UPDATED URL: Using the RAW GitHub link for your specific model
-const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb';
+const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb?v=3';
+const CARM_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/c-armModel.glb?v=1';
 
 // --- MAIN APP ---
 const App = () => {
   const mountRef = useRef(null);
   
   const [controls, setControls] = useState({
-    lift: 0.1,          
+    lift: -0.3,          
     column_rot: 0,      
     wig_wag: 0,         
     orbital_slide: 0,
-    cart_x: 1.5,
+    cart_x: 1.7, // Longitudinal
+    cart_z: 0.0, // Lateral (New)
   });
   const [beamActive, setBeamActive] = useState(false);
   const [lastXray, setLastXray] = useState(null);
+  const [currentAnatomy, setCurrentAnatomy] = useState("READY");
   const [modelLoading, setModelLoading] = useState(true);
 
   // Scene Graph Refs
@@ -30,46 +32,136 @@ const App = () => {
   const wigWagRef = useRef(new THREE.Group());
   const cArmSlideRef = useRef(new THREE.Group());
   const beamRef = useRef(null);
-  
-  // Physics Anchors (for distance calculation)
+  const cArmModelRef = useRef(null);
   const srcAnchorRef = useRef(new THREE.Group());
   const detAnchorRef = useRef(new THREE.Group());
 
-  // --- DYNAMIC XRAY GENERATOR ---
+  // --- DYNAMIC ANATOMY GENERATOR ---
   const generateRealisticXray = () => {
-    const { orbital_slide, wig_wag } = controls;
-    // Parallax effect
-    const offsetX = (wig_wag * 45); 
-    const offsetY = (orbital_slide * 35); 
+    const { cart_x, orbital_slide, wig_wag } = controls;
+    
+    // 1. Determine Anatomy Zone based on Cart X position
+    // Tuning these ranges based on the patient position (0, 1.45, 0) relative to cart
+    let anatomyType = "Unknown";
+    let svgContent = "";
+    
+    // Normalize rotation for view width (cos effect for rotation)
+    const viewWidth = Math.abs(Math.cos(orbital_slide)) * 0.8 + 0.2; 
+    const spineOffset = Math.sin(orbital_slide) * 20; // Spine moves off-center during rotation
 
-    const vertebrae = [15, 28, 41, 54, 67, 80].map((y, i) => 
-      `<rect key="${i}" x="${45 + offsetX}" y="${y + offsetY}" width="10" height="10" rx="2" fill="#eee" opacity="0.75" filter="url(#blur)" />`
-    ).join('');
+    // -- GENERATION LOGIC --
+    if (cart_x < 1.2) {
+        anatomyType = "HEAD / NECK";
+        // Skull & Cervical Spine
+        svgContent = `
+            <ellipse cx="${50 + spineOffset * 0.5}" cy="40" rx="${30 * viewWidth}" ry="35" fill="#ddd" opacity="0.9" filter="url(#blur)" />
+            <path d="M ${50 + spineOffset * 0.5 - 20 * viewWidth} 50 Q ${50 + spineOffset * 0.5} 80 ${50 + spineOffset * 0.5 + 20 * viewWidth} 50" stroke="#aaa" stroke-width="3" fill="none" opacity="0.8" />
+            <rect x="${45 + spineOffset}" y="70" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
+            <rect x="${45 + spineOffset}" y="88" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
+        `;
+    } else if (cart_x >= 1.2 && cart_x < 1.7) {
+        anatomyType = "CHEST / THORAX";
+        // Ribs & Thoracic Spine
+        // Scroll effect: use cart_x decimals to shift ribs up/down
+        const scrollY = (cart_x % 0.2) * 500; 
+        
+        let ribs = "";
+        for(let i=0; i<6; i++) {
+            const yBase = (i * 18) - scrollY + 20;
+            if(yBase > -10 && yBase < 110) {
+                ribs += `
+                    <path d="M ${50 + spineOffset} ${yBase} Q ${10} ${yBase+10} ${15} ${yBase+25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
+                    <path d="M ${50 + spineOffset} ${yBase} Q ${90} ${yBase+10} ${85} ${yBase+25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
+                `;
+            }
+        }
+        
+        let spine = "";
+        for(let i=0; i<8; i++) {
+            const yBase = (i * 12) - scrollY + 10;
+             if(yBase > -10 && yBase < 110) {
+                spine += `<rect x="${44 + spineOffset}" y="${yBase}" width="12" height="10" rx="2" fill="#eee" opacity="0.8" />`;
+             }
+        }
 
-    const ribs = [30, 43, 56].map((y, i) => `
-      <path d="M 42 ${y+offsetY} Q 15 ${y+5+offsetY} 8 ${y+18+offsetY}" stroke="#ddd" stroke-width="2.5" fill="none" opacity="0.35" filter="url(#blur)" />
-      <path d="M 58 ${y+offsetY} Q 85 ${y+5+offsetY} 92 ${y+18+offsetY}" stroke="#ddd" stroke-width="2.5" fill="none" opacity="0.35" filter="url(#blur)" />
-    `).join('');
+        // Heart Shadow (only visible in AP mostly)
+        const heartOpacity = Math.max(0, Math.cos(orbital_slide) * 0.3);
+        const heart = `<ellipse cx="${60 + spineOffset}" cy="60" rx="20" ry="25" fill="#eee" opacity="${heartOpacity}" filter="url(#blur)" />`;
 
+        svgContent = ribs + spine + heart;
+
+    } else if (cart_x >= 1.7 && cart_x < 2.1) {
+        anatomyType = "ABDOMEN / PELVIS";
+        // Lumbar Spine & Pelvis Wings
+        const scrollY = (cart_x % 0.2) * 400;
+
+        let spine = "";
+        for(let i=0; i<5; i++) {
+            const yBase = (i * 16) - scrollY + 10;
+            if(yBase > -10 && yBase < 110) {
+                spine += `<rect x="${42 + spineOffset}" y="${yBase}" width="16" height="14" rx="3" fill="#eee" opacity="0.9" />`;
+            }
+        }
+        
+        // Pelvis only appears at the bottom of this range
+        let pelvis = "";
+        if (cart_x > 1.9) {
+            pelvis = `
+                <path d="M ${50 + spineOffset} 60 Q ${10} 60 ${15} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
+                <path d="M ${50 + spineOffset} 60 Q ${90} 60 ${85} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
+            `;
+        }
+
+        svgContent = spine + pelvis;
+
+    } else {
+        anatomyType = "LEGS / FEMUR";
+        // Long bones
+        const scrollY = (cart_x % 0.5) * 200;
+        
+        svgContent = `
+            <rect x="${35 + spineOffset}" y="-20" width="12" height="140" rx="5" fill="#ddd" opacity="0.8" filter="url(#blur)" />
+            <rect x="${55 + spineOffset}" y="-20" width="12" height="140" rx="5" fill="#ddd" opacity="0.8" filter="url(#blur)" />
+            <rect x="${38 + spineOffset}" y="${80 - scrollY}" width="6" height="140" fill="#fff" opacity="0.3" /> 
+        `;
+    }
+    
+    // Update UI state with anatomy name
+    setCurrentAnatomy(anatomyType);
+
+    // Common Noise & Overlay
     const svgString = `
       <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100">
         <defs>
-          <filter id="blur"><feGaussianBlur in="SourceGraphic" stdDeviation="0.8" /></filter>
+          <filter id="blur"><feGaussianBlur in="SourceGraphic" stdDeviation="1.5" /></filter>
           <filter id="noise">
-            <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="3" stitchTiles="stitch" />
-            <feComponentTransfer><feFuncA type="table" tableValues="0 0.15" /></feComponentTransfer>
+            <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" />
+            <feComponentTransfer><feFuncA type="table" tableValues="0 0.2" /></feComponentTransfer>
           </filter>
         </defs>
-        <rect width="100" height="100" fill="#080808" />
-        <rect width="100" height="100" filter="url(#noise)" opacity="0.4" />
-        ${vertebrae}
-        ${ribs}
-        <g opacity="0.8" font-family="monospace" font-size="4.5">
-          <text x="5" y="10" fill="#00ff00">kVp: 85</text>
-          <text x="5" y="16" fill="#00ff00">mA: 3.8</text>
-          <text x="5" y="22" fill="#00ff00">Dose: 1.2uGy</text>
-          <text x="70" y="10" fill="#fff" opacity="0.5">AP VIEW</text>
+        
+        <!-- Background -->
+        <rect width="100" height="100" fill="#050505" />
+        
+        <!-- Generated Anatomy Content -->
+        <g transform="rotate(${-wig_wag * 20}, 50, 50)">
+            ${svgContent}
         </g>
+
+        <!-- Noise Overlay -->
+        <rect width="100" height="100" filter="url(#noise)" opacity="0.5" />
+        
+        <!-- Metadata Overlay -->
+        <g opacity="0.8" font-family="monospace" font-size="4">
+          <text x="4" y="8" fill="#00ff00">kVp: 78</text>
+          <text x="4" y="14" fill="#00ff00">mA: 4.2</text>
+          <text x="65" y="8" fill="#fff" opacity="0.7">${anatomyType}</text>
+          <text x="65" y="14" fill="#fff" opacity="0.5">${orbital_slide > 0.2 || orbital_slide < -0.2 ? 'OBL/LAT' : 'AP'}</text>
+        </g>
+        
+        <!-- Orientation Marker -->
+        <circle cx="92" cy="92" r="3" fill="none" stroke="#fff" stroke-width="0.5" opacity="0.5" />
+        <text x="89" y="93.5" fill="#fff" font-size="3" opacity="0.5">R</text>
       </svg>
     `;
 
@@ -156,65 +248,71 @@ const App = () => {
         leg.castShadow = true;
         bedGroup.add(leg);
     });
-    
-    // --- LOAD GLB PATIENT ---
+
+    // --- LOAD MODELS ---
     const loader = new GLTFLoader();
-    if (PATIENT_URL) {
-        loader.load(
-            PATIENT_URL, 
-            (gltf) => {
-                const model = gltf.scene;
-                
-                // --- DYNAMIC SCALING (To 1.7m) ---
-                const box = new THREE.Box3().setFromObject(model);
-                const size = new THREE.Vector3();
-                box.getSize(size);
-                
-                const maxDim = Math.max(size.x, size.y, size.z); 
-                
-                if (maxDim > 0) {
-                    const desiredHeight = 1.7; 
-                    const scaleFactor = desiredHeight / maxDim;
-                    model.scale.set(scaleFactor, scaleFactor, scaleFactor);
-                } else {
-                    model.scale.set(1.0, 1.0, 1.0); // Fallback
-                }
 
-                // --- ORIENTATION & POSITION ---
-                model.rotation.set(-Math.PI / 2, 0, Math.PI); 
-                model.position.set(0, 1.45, -1.0); 
-
-                // --- MATERIAL OVERRIDE: WHITE PHANTOM LOOK ---
-                model.traverse((node) => {
-                    if (node.isMesh) {
-                        node.castShadow = true;
-                        node.receiveShadow = true;
-                        
-                        // Replace original material with White Standard Material
-                        node.material = new THREE.MeshStandardMaterial({
-                            color: 0xffffff,
-                            roughness: 0.5,
-                            metalness: 0.1,
-                            skinning: node.isSkinnedMesh // Important if the model is rigged
-                        });
-                    }
-                });
-
-                bedGroup.add(model);
-                setModelLoading(false);
-            },
-            undefined,
-            (error) => {
-                console.warn('Could not load patient model. Using fallback URL might help.');
-                console.error(error);
-                setModelLoading(false);
+    // 1. Patient Model
+    loader.load(
+        PATIENT_URL, 
+        (gltf) => {
+            const model = gltf.scene;
+            const box = new THREE.Box3().setFromObject(model);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z); 
+            if (maxDim > 0) {
+                const desiredHeight = 1.7; 
+                const scaleFactor = desiredHeight / maxDim;
+                model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            } else {
+                model.scale.set(1.0, 1.0, 1.0);
             }
-        );
-    } else {
-        setModelLoading(false);
-    }
+            model.rotation.set(-Math.PI / 2, 0, Math.PI); 
+            model.position.set(0, 1.45, 0.0); 
 
-    // --- ROBOT CART ---
+            model.traverse((node) => {
+                if (node.isMesh) {
+                    node.castShadow = true;
+                    node.receiveShadow = true;
+                }
+            });
+
+            bedGroup.add(model);
+            setModelLoading(false);
+        },
+        undefined,
+        (error) => { console.error(error); setModelLoading(false); }
+    );
+
+    // 2. Extra C-Arm Model (Background)
+    loader.load(
+        CARM_URL,
+        (gltf) => {
+            const cArmModel = gltf.scene;
+            cArmModelRef.current = cArmModel;
+            cArmModel.position.set(1.5, 0, -2.0);
+            
+            cArmModel.traverse((node) => {
+                if (node.isMesh) {
+                    node.castShadow = true;
+                    node.receiveShadow = true;
+                    // White material override
+                    node.material = new THREE.MeshStandardMaterial({
+                        color: 0xffffff,
+                        roughness: 0.4,
+                        metalness: 0.2
+                    });
+                }
+            });
+
+            scene.add(cArmModel);
+        },
+        undefined,
+        (error) => { console.error(error); }
+    );
+
+    // --- ROBOT CART (Procedural) ---
     const cartRoot = new THREE.Group();
     cartRoot.position.set(1.5, 0, 0); 
     cartRoot.rotation.y = -Math.PI / 2; 
@@ -235,7 +333,7 @@ const App = () => {
         cartRoot.add(cover);
     });
 
-    // --- KINEMATICS ---
+    // --- KINEMATICS (Procedural) ---
     const colBaseGroup = new THREE.Group();
     colBaseGroup.position.set(0, 0.6, 0.45); 
     cartRoot.add(colBaseGroup);
@@ -384,12 +482,17 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    // Lift Logic
+    // Lift Logic (Procedural Robot)
     if (liftRef.current) liftRef.current.position.y = 1.20 + controls.lift;
     if (columnRotRef.current) columnRotRef.current.rotation.y = controls.column_rot;
     if (wigWagRef.current) wigWagRef.current.rotation.z = controls.wig_wag;
     if (cArmSlideRef.current) cArmSlideRef.current.rotation.x = controls.orbital_slide;
-    if (cartRef.current) cartRef.current.position.x = controls.cart_x;
+    if (cartRef.current) {
+        cartRef.current.position.x = controls.cart_x;
+        cartRef.current.position.z = controls.cart_z; // Apply Lateral Z
+    }
+
+    // Removed C-Arm GLB control logic to make it static
   }, [controls]);
 
   useEffect(() => {
@@ -416,7 +519,9 @@ const App = () => {
               {lastXray ? (
                   <img src={lastXray} alt="Xray" style={{ width: '100%', height: '100%', objectFit: 'contain', filter: beamActive ? 'brightness(1.6) contrast(1.1) drop-shadow(0 0 5px white)' : 'none' }} />
               ) : (
-                  <div style={{ color: '#333', fontSize: '9px', letterSpacing: '1px' }}>READY</div>
+                  <div style={{ color: '#333', fontSize: '9px', letterSpacing: '1px' }}>
+                    {beamActive ? "EXPOSING..." : (currentAnatomy === "READY" ? "READY" : currentAnatomy)}
+                  </div>
               )}
               <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(rgba(255,255,255,0.01) 0px, transparent 1px, transparent 2px)', pointerEvents: 'none' }}></div>
               <div style={{ position: 'absolute', bottom: '5px', left: '8px', fontSize: '8px', color: '#0f0', opacity: 0.6, fontFamily: 'monospace' }}>FPS: 30</div>
@@ -434,18 +539,18 @@ const App = () => {
             <div><h3 style={{ margin: 0, fontSize: '14px' }}>CIARTIC Move</h3><span style={{ fontSize: '10px', color: '#888' }}>ROBOTIC SYSTEM</span></div>
          </div>
          {modelLoading && <div style={{fontSize:'10px', color: '#888', marginBottom: '10px'}}>Loading Patient Model...</div>}
-         {['cart_x', 'lift', 'orbital_slide', 'wig_wag', 'column_rot'].map(key => (
+         {['cart_x', 'cart_z', 'lift', 'orbital_slide', 'wig_wag', 'column_rot'].map(key => (
              <div key={key} style={{ marginBottom: '12px' }}>
                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#666' }}>
                      {key.replace('_', ' ')}
                      <span style={{ color: '#ff6600' }}>{
-                        (key === 'lift' || key === 'cart_x') ? controls[key].toFixed(2) + 'm' : 
+                        (key === 'lift' || key === 'cart_x' || key === 'cart_z') ? controls[key].toFixed(2) + 'm' : 
                         (controls[key] * 180 / Math.PI).toFixed(0) + '°'
                      }</span>
                  </div>
                  <input type="range" 
-                    min={key === 'lift' ? -0.5 : (key === 'cart_x' ? 0.8 : (key === 'orbital_slide' ? -1.5 : (key === 'wig_wag' ? -0.4 : -1.5)))} 
-                    max={key === 'lift' ? 0.5 : (key === 'cart_x' ? 2.5 : (key === 'orbital_slide' ? 1.5 : (key === 'wig_wag' ? 0.4 : 1.5)))} 
+                    min={key === 'lift' ? -0.5 : (key === 'cart_x' ? 0.8 : (key === 'cart_z' ? -1.5 : (key === 'orbital_slide' ? -1.5 : (key === 'wig_wag' ? -0.4 : -1.5))))} 
+                    max={key === 'lift' ? 0.5 : (key === 'cart_x' ? 2.5 : (key === 'cart_z' ? 1.5 : (key === 'orbital_slide' ? 1.5 : (key === 'wig_wag' ? 0.4 : 1.5))))} 
                     step="0.01" 
                     value={controls[key]} 
                     onChange={e => setControls({...controls, [key]: parseFloat(e.target.value)})} 
