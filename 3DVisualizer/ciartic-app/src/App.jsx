@@ -10,6 +10,65 @@ const CARM_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_
 const realsense_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/realsense.glb?v=1';
 const ISO_WORLD = new THREE.Vector3(0, 1.45, 0);
 
+// --- MATH UTILS & DEVICE PROFILE ---
+const D2R = Math.PI / 180;
+const R2D = 180 / Math.PI;
+
+const DEVICE_PROFILE = {
+    limits: {
+        // Translations (meters)
+        lift: { min: -0.5, max: 0.5 },
+        cart_x: { min: 0.8, max: 2.5 },
+        cart_z: { min: -1.5, max: 1.5 },
+        // Rotations (degrees) - will be converted to radians for control limits
+        orbital: { min: -100, max: 100 },
+        wig_wag: { min: -23, max: 23 },    // approx +/- 0.4 rad
+        column_rot: { min: -86, max: 86 }, // approx +/- 1.5 rad
+    }
+};
+
+const CONTROL_SPECS = {
+    cart_x: {
+        label: 'Cart Long',
+        type: 'translate',
+        ...DEVICE_PROFILE.limits.cart_x,
+        step: 0.01
+    },
+    cart_z: {
+        label: 'Cart Lat',
+        type: 'translate',
+        ...DEVICE_PROFILE.limits.cart_z,
+        step: 0.01
+    },
+    lift: {
+        label: 'Lift',
+        type: 'translate',
+        ...DEVICE_PROFILE.limits.lift,
+        step: 0.001
+    },
+    orbital_slide: {
+        label: 'Orbital',
+        type: 'rotate',
+        min: DEVICE_PROFILE.limits.orbital.min * D2R,
+        max: DEVICE_PROFILE.limits.orbital.max * D2R,
+        step: 0.1 * D2R
+    },
+    wig_wag: {
+        label: 'Wig Wag',
+        type: 'rotate',
+        min: DEVICE_PROFILE.limits.wig_wag.min * D2R,
+        max: DEVICE_PROFILE.limits.wig_wag.max * D2R,
+        step: 0.1 * D2R
+    },
+    column_rot: {
+        label: 'Column Rot',
+        type: 'rotate',
+        min: DEVICE_PROFILE.limits.column_rot.min * D2R,
+        max: DEVICE_PROFILE.limits.column_rot.max * D2R,
+        step: 0.5 * D2R
+    },
+};
+
 
 // --- MAIN APP ---
 const App = () => {
@@ -662,24 +721,28 @@ const App = () => {
                     <div><h3 style={{ margin: 0, fontSize: '14px' }}>CIARTIC Move</h3><span style={{ fontSize: '10px', color: '#888' }}>ROBOTIC SYSTEM</span></div>
                 </div>
                 {modelLoading && <div style={{ fontSize: '10px', color: '#888', marginBottom: '10px' }}>Loading Patient Model...</div>}
-                {['cart_x', 'cart_z', 'lift', 'orbital_slide', 'wig_wag', 'column_rot'].map(key => (
-                    <div key={key} style={{ marginBottom: '12px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#666' }}>
-                            {key.replace('_', ' ')}
-                            <span style={{ color: '#ff6600' }}>{
-                                (key === 'lift' || key === 'cart_x' || key === 'cart_z') ? controls[key].toFixed(2) + 'm' :
-                                    (controls[key] * 180 / Math.PI).toFixed(0) + '°'
-                            }</span>
+                {Object.entries(CONTROL_SPECS).map(([key, spec]) => {
+                    const val = controls[key];
+                    const displayVal = spec.type === 'rotate'
+                        ? (val * R2D).toFixed(1) + '°'
+                        : val.toFixed(2) + 'm';
+
+                    return (
+                        <div key={key} style={{ marginBottom: '12px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#666' }}>
+                                {spec.label}
+                                <span style={{ color: '#ff6600' }}>{displayVal}</span>
+                            </div>
+                            <input type="range"
+                                min={spec.min}
+                                max={spec.max}
+                                step={spec.step}
+                                value={val}
+                                onChange={e => setControls({ ...controls, [key]: parseFloat(e.target.value) })}
+                                style={{ width: '100%', cursor: 'pointer' }} />
                         </div>
-                        <input type="range"
-                            min={key === 'lift' ? -0.5 : (key === 'cart_x' ? 0.8 : (key === 'cart_z' ? -1.5 : (key === 'orbital_slide' ? -1.5 : (key === 'wig_wag' ? -0.4 : -1.5))))}
-                            max={key === 'lift' ? 0.5 : (key === 'cart_x' ? 2.5 : (key === 'cart_z' ? 1.5 : (key === 'orbital_slide' ? 1.5 : (key === 'wig_wag' ? 0.4 : 1.5))))}
-                            step="0.01"
-                            value={controls[key]}
-                            onChange={e => setControls({ ...controls, [key]: parseFloat(e.target.value) })}
-                            style={{ width: '100%', cursor: 'pointer' }} />
-                    </div>
-                ))}
+                    );
+                })}
                 <div style={{ marginTop: '20px', borderTop: '1px solid #eee', paddingTop: '15px' }}>
                     <button onClick={handleTakeXray} disabled={beamActive} style={{ width: '100%', padding: '12px', backgroundColor: beamActive ? '#ff0000' : '#333', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: beamActive ? 'not-allowed' : 'pointer', transition: 'background 0.2s' }}>
                         {beamActive ? 'EXPOSING...' : 'TAKE X-RAY'}
