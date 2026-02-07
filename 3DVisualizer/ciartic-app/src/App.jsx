@@ -5,8 +5,10 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 // --- CONFIGURATION ---
-const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb?v=3';
-const CARM_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/c-armModel.glb?v=1';
+const PATIENT_URL   = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb?v=3';
+const CARM_URL      = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/c-armModel.glb?v=1';
+const realsense_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/realsense.glb?v=1';
+
 
 // --- MAIN APP ---
 const App = () => {
@@ -310,6 +312,39 @@ const App = () => {
         },
         undefined,
         (error) => { console.error(error); }
+    );
+
+        // 3. realsense Model
+    loader.load(
+        realsense_URL, 
+        (gltf) => {
+            const model = gltf.scene;
+            const box = new THREE.Box3().setFromObject(model);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z); 
+            if (maxDim > 0) {
+                const desiredHeight = 0.15; 
+                const scaleFactor = desiredHeight / maxDim;
+                model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            } else {
+                model.scale.set(0.15, 0.15, 0.15);
+            }
+            model.rotation.set(Math.PI/2, 0, -Math.PI/2); 
+            model.position.set(-0.22, 2.16, 0.0); 
+
+            model.traverse((node) => {
+                if (node.isMesh) {
+                    node.castShadow = true;
+                    node.receiveShadow = true;
+                }
+            });
+
+            bedGroup.add(model);
+            setModelLoading(false);
+        },
+        undefined,
+        (error) => { console.error(error); setModelLoading(false); }
     );
 
     // --- ROBOT CART (Procedural) ---
