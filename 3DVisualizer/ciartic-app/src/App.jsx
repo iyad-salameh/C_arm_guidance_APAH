@@ -548,13 +548,21 @@ const App = () => {
         srcHousing.add(srcAnchor);
 
         // BEAM PHYSICS
-        const beamGeo = new THREE.ConeGeometry(0.2, 1.0, 32, 1, true);
-        beamGeo.rotateX(Math.PI / 2); // Point to +Z
-        beamGeo.translate(0, 0, 0.5); // Pivot at base (Z=0 to Z=1)
+        // Create unit cone aligned with +Y, Apex at (0,0,0), Base at (0,1,0)
+        // Default Cone: height 1, center 0 (range -0.5 to 0.5). Apex at +0.5.
+        // We want Apex at 0.
+        // 1. Rotate X by PI => Apex at -0.5, Base at 0.5
+        // 2. Translate Y +0.5 => Apex at 0, Base at 1.
+        const beamGeo = new THREE.ConeGeometry(1, 1, 32, 1, true);
+        beamGeo.rotateX(Math.PI);
+        beamGeo.translate(0, 0.5, 0);
+
         const beamMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false });
         const beam = new THREE.Mesh(beamGeo, beamMat);
         beam.visible = false; // Start hidden
-        srcAnchor.add(beam);
+
+        // Attach to scene root to avoid parent transform issues (we will position/orient in world space)
+        scene.add(beam);
         beamRef.current = beam;
 
         // Vectors (Allocated ONCE)
@@ -564,6 +572,9 @@ const App = () => {
         const vecToI = new THREE.Vector3(); // Scratch AP
         const closestPoint = new THREE.Vector3(); // Clamped result
         const tempVec = new THREE.Vector3(); // Unclamped result / Midpoint scratch
+        const dir = new THREE.Vector3(); // Beam direction scratch
+        const yAxis = new THREE.Vector3(0, 1, 0); // Reference UP for beam
+        const beamAxisWorld = new THREE.Vector3(); // For debug check
 
         let reqId;
         const animate = () => {
@@ -576,10 +587,24 @@ const App = () => {
                 detAnchorRef.current.getWorldPosition(v2);
                 const distance = v1.distanceTo(v2);
 
-                // Beam Logic
+                // Beam Logic (World Space Alignment)
+                // v1 = SRC, v2 = DET
+                dir.subVectors(v2, v1);
+                const sid = dir.length();
+                dir.normalize(); // Now dir is unit vector SRC->DET
+
                 beamRef.current.visible = beamActiveRef.current;
-                beamRef.current.scale.set(1, 1, distance); // Scale Z
-                beamRef.current.lookAt(v2);
+
+                // Position at SRC
+                beamRef.current.position.copy(v1);
+
+                // Orient Y-axis cone to point along dir
+                beamRef.current.quaternion.setFromUnitVectors(yAxis, dir);
+
+                // Scale Z to match distance (Y is length axis for our cone, X/Z are thickness)
+                // Use const beamRadius ~ 0.2
+                beamRef.current.scale.set(0.2, sid, 0.2);
+
 
                 // --- DEBUG UPDATE ---
                 if (debugEnabledRef.current) {
@@ -630,6 +655,10 @@ const App = () => {
                         tempVec.addVectors(v1, v2).multiplyScalar(0.5);
                         const midToIso = tempVec.distanceTo(ISO_WORLD);
 
+                        // Beam Angle Check (Alignment Debug)
+                        beamAxisWorld.copy(yAxis).applyQuaternion(beamRef.current.quaternion);
+                        const angleDeg = beamAxisWorld.angleTo(dir) * 180 / Math.PI;
+
                         const newReadout = {
                             src: v1.toArray().map(n => n.toFixed(3)),
                             det: v2.toArray().map(n => n.toFixed(3)),
@@ -637,7 +666,8 @@ const App = () => {
                             midToIso: midToIso.toFixed(3),
                             isoRay: isoRayDist.toFixed(3),
                             isoSeg: isoSegDist.toFixed(3),
-                            t: t.toFixed(3) // Show UNCLAMPED t
+                            t: t.toFixed(3), // Show UNCLAMPED t
+                            beamAngle: angleDeg.toFixed(3) // Should be ~0.000
                         };
                         setDebugReadout(newReadout);
                     }
@@ -727,6 +757,7 @@ const App = () => {
                     <div style={{ color: '#fff' }}>IsoRay: {debugReadout.isoRay} m</div>
                     <div>IsoSeg: {debugReadout.isoSeg} m</div>
                     <div>t: {debugReadout.t}</div>
+                    <div>BeamAng: {debugReadout.beamAngle}°</div>
                     <hr style={{ borderColor: '#444', margin: '5px 0' }} />
                     <div>Lift: {controls.lift.toFixed(3)}</div>
                     <div>C-Rot: {(controls.column_rot * 180 / Math.PI).toFixed(1)}°</div>
