@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { projectPointToLineParamsInto } from './utils/imagingGeometry.js';
 
 // --- CONFIGURATION ---
 const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb?v=3';
@@ -91,6 +92,7 @@ const App = () => {
 
     const debugEnabledRef = useRef(false);
     const lastDebugUpdateRef = useRef(0);
+    const beamActiveRef = useRef(false);
 
     // Scene Graph Refs
     const cartRef = useRef(null);
@@ -99,13 +101,13 @@ const App = () => {
     const wigWagRef = useRef(new THREE.Group());
     const cArmSlideRef = useRef(new THREE.Group());
     const beamRef = useRef(null);
-    const cArmModelRef = useRef(null);
+    // const cArmModelRef = useRef(null); // Unused
     const srcAnchorRef = useRef(new THREE.Group());
     const detAnchorRef = useRef(new THREE.Group());
 
     // --- DYNAMIC ANATOMY GENERATOR ---
-    const generateRealisticXray = () => {
-        const { cart_x, orbital_slide, wig_wag } = controls;
+    const generateRealisticXray = (currentControls = controls) => {
+        const { cart_x, orbital_slide, wig_wag } = currentControls;
 
         // 1. Determine Anatomy Zone based on Cart X position
         // Tuning these ranges based on the patient position (0, 1.45, 0) relative to cart
@@ -236,10 +238,11 @@ const App = () => {
     };
 
     const handleTakeXray = () => {
+        const shotControls = { ...controls };
         setBeamActive(true);
         setTimeout(() => {
             try {
-                setLastXray(generateRealisticXray());
+                setLastXray(generateRealisticXray(shotControls));
             } catch (e) {
                 console.error("Xray Gen Error", e);
             }
@@ -308,11 +311,32 @@ const App = () => {
         // --- DEBUG MARKER ---
         const isoMarker = new THREE.Mesh(
             new THREE.SphereGeometry(0.05, 16, 16),
-            new THREE.MeshBasicMaterial({ color: 0xff00ff, visible: false })
+            new THREE.MeshBasicMaterial({ color: 0xff00ff })
         );
         isoMarker.position.copy(ISO_WORLD);
         scene.add(isoMarker);
         isoMarker.add(new THREE.AxesHelper(0.2));
+
+        // --- VISUAL DEBUG HELPERS ---
+        // 1. Ray Line (Source -> Detector) - Red
+        const rayGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0)]);
+        const rayLine = new THREE.Line(rayGeo, new THREE.LineBasicMaterial({ color: 0xff0000 }));
+        rayLine.visible = false;
+        scene.add(rayLine);
+
+        // 2. Closest Point Marker (on Ray) - Yellow
+        const closestPtMarker = new THREE.Mesh(
+            new THREE.SphereGeometry(0.04, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffff00 })
+        );
+        closestPtMarker.visible = false;
+        scene.add(closestPtMarker);
+
+        // 3. Connector Line (Iso -> Closest Point) - Green
+        const connGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0)]);
+        const connLine = new THREE.Line(connGeo, new THREE.LineBasicMaterial({ color: 0x00ff00 }));
+        connLine.visible = false;
+        scene.add(connLine);
 
         // --- MATERIALS ---
         const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
@@ -339,101 +363,65 @@ const App = () => {
             bedGroup.add(leg);
         });
 
-        // --- LOAD MODELS ---
+        // --- LOAD MODELS (Promise-based) ---
         const loader = new GLTFLoader();
+        const loadModel = (url) => new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
 
-        // 1. Patient Model
-        loader.load(
-            PATIENT_URL,
-            (gltf) => {
-                const model = gltf.scene;
-                const box = new THREE.Box3().setFromObject(model);
-                const size = new THREE.Vector3();
-                box.getSize(size);
-                const maxDim = Math.max(size.x, size.y, size.z);
-                if (maxDim > 0) {
-                    const desiredHeight = 1.7;
-                    const scaleFactor = desiredHeight / maxDim;
-                    model.scale.set(scaleFactor, scaleFactor, scaleFactor);
-                } else {
-                    model.scale.set(1.0, 1.0, 1.0);
+        Promise.all([
+            loadModel(PATIENT_URL),
+            loadModel(CARM_URL),
+            loadModel(realsense_URL)
+        ]).then(([patientGltf, carmGltf, rsGltf]) => {
+            // 1. Patient
+            const patientModel = patientGltf.scene;
+            const patientBox = new THREE.Box3().setFromObject(patientModel);
+            const patientSize = new THREE.Vector3();
+            patientBox.getSize(patientSize);
+            const maxDimP = Math.max(patientSize.x, patientSize.y, patientSize.z);
+            if (maxDimP > 0) {
+                const scale = 1.7 / maxDimP;
+                patientModel.scale.set(scale, scale, scale);
+            }
+            patientModel.rotation.set(-Math.PI / 2, 0, Math.PI);
+            patientModel.position.set(0, 1.45, 0.0);
+            patientModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+            bedGroup.add(patientModel);
+
+            // 2. Extra C-Arm
+            const carmModel = carmGltf.scene;
+            // cArmModelRef.current = carmModel; // Unused
+            carmModel.position.set(1.5, 0, -2.0);
+            carmModel.traverse(n => {
+                if (n.isMesh) {
+                    n.castShadow = true;
+                    n.receiveShadow = true;
+                    n.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.2 });
                 }
-                model.rotation.set(-Math.PI / 2, 0, Math.PI);
-                model.position.set(0, 1.45, 0.0);
+            });
+            scene.add(carmModel);
 
-                model.traverse((node) => {
-                    if (node.isMesh) {
-                        node.castShadow = true;
-                        node.receiveShadow = true;
-                    }
-                });
+            // 3. Realsense
+            const rsModel = rsGltf.scene;
+            const rsBox = new THREE.Box3().setFromObject(rsModel);
+            const rsSize = new THREE.Vector3();
+            rsBox.getSize(rsSize);
+            const maxDimR = Math.max(rsSize.x, rsSize.y, rsSize.z);
+            if (maxDimR > 0) {
+                const scale = 0.15 / maxDimR;
+                rsModel.scale.set(scale, scale, scale);
+            } else {
+                rsModel.scale.set(0.15, 0.15, 0.15);
+            }
+            rsModel.rotation.set(Math.PI / 2, 0, -Math.PI / 2);
+            rsModel.position.set(-0.22, 2.16, 0.0);
+            rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+            bedGroup.add(rsModel);
 
-                bedGroup.add(model);
-                setModelLoading(false);
-            },
-            undefined,
-            (error) => { console.error(error); setModelLoading(false); }
-        );
-
-        // 2. Extra C-Arm Model (Background)
-        loader.load(
-            CARM_URL,
-            (gltf) => {
-                const cArmModel = gltf.scene;
-                cArmModelRef.current = cArmModel;
-                cArmModel.position.set(1.5, 0, -2.0);
-
-                cArmModel.traverse((node) => {
-                    if (node.isMesh) {
-                        node.castShadow = true;
-                        node.receiveShadow = true;
-                        // White material override
-                        node.material = new THREE.MeshStandardMaterial({
-                            color: 0xffffff,
-                            roughness: 0.4,
-                            metalness: 0.2
-                        });
-                    }
-                });
-
-                scene.add(cArmModel);
-            },
-            undefined,
-            (error) => { console.error(error); }
-        );
-
-        // 3. realsense Model
-        loader.load(
-            realsense_URL,
-            (gltf) => {
-                const model = gltf.scene;
-                const box = new THREE.Box3().setFromObject(model);
-                const size = new THREE.Vector3();
-                box.getSize(size);
-                const maxDim = Math.max(size.x, size.y, size.z);
-                if (maxDim > 0) {
-                    const desiredHeight = 0.15;
-                    const scaleFactor = desiredHeight / maxDim;
-                    model.scale.set(scaleFactor, scaleFactor, scaleFactor);
-                } else {
-                    model.scale.set(0.15, 0.15, 0.15);
-                }
-                model.rotation.set(Math.PI / 2, 0, -Math.PI / 2);
-                model.position.set(-0.22, 2.16, 0.0);
-
-                model.traverse((node) => {
-                    if (node.isMesh) {
-                        node.castShadow = true;
-                        node.receiveShadow = true;
-                    }
-                });
-
-                bedGroup.add(model);
-                setModelLoading(false);
-            },
-            undefined,
-            (error) => { console.error(error); setModelLoading(false); }
-        );
+            setModelLoading(false);
+        }).catch(err => {
+            console.error("Model Load Error", err);
+            setModelLoading(false);
+        });
 
         // --- ROBOT CART (Procedural) ---
         const cartRoot = new THREE.Group();
@@ -449,7 +437,7 @@ const App = () => {
         const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.02, 1.12), matOrange);
         stripe.position.y = 0.6;
         cartRoot.add(stripe);
-        const wheelGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.25, 32);
+        // Using Sphere for wheels instead of Cylinder
         [{ x: 0.35, z: 0.35 }, { x: -0.35, z: 0.35 }, { x: 0.35, z: -0.35 }, { x: -0.35, z: -0.35 }].forEach(pos => {
             const cover = new THREE.Mesh(new THREE.SphereGeometry(0.16, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), matWhite);
             cover.position.set(pos.x, 0.15, pos.z);
@@ -561,21 +549,25 @@ const App = () => {
 
         // BEAM PHYSICS
         const beamGeo = new THREE.ConeGeometry(0.2, 1.0, 32, 1, true);
-        beamGeo.translate(0, 0.5, 0); // Pivot at base
-        const beamMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false });
+        beamGeo.rotateX(Math.PI / 2); // Point to +Z
+        beamGeo.translate(0, 0, 0.5); // Pivot at base (Z=0 to Z=1)
+        const beamMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false });
         const beam = new THREE.Mesh(beamGeo, beamMat);
+        beam.visible = false; // Start hidden
         srcAnchor.add(beam);
         beamRef.current = beam;
 
-        // Vectors
+        // Vectors (Allocated ONCE)
         const v1 = new THREE.Vector3();
         const v2 = new THREE.Vector3();
-        const vSeg = new THREE.Vector3();
-        const vecToI = new THREE.Vector3();
-        const closestPoint = new THREE.Vector3();
+        const vSeg = new THREE.Vector3(); // Scratch AB
+        const vecToI = new THREE.Vector3(); // Scratch AP
+        const closestPoint = new THREE.Vector3(); // Clamped result
+        const tempVec = new THREE.Vector3(); // Unclamped result / Midpoint scratch
 
+        let reqId;
         const animate = () => {
-            requestAnimationFrame(animate);
+            reqId = requestAnimationFrame(animate);
             orbit.update();
 
             // PHYSICS LOOP
@@ -583,39 +575,77 @@ const App = () => {
                 srcAnchorRef.current.getWorldPosition(v1);
                 detAnchorRef.current.getWorldPosition(v2);
                 const distance = v1.distanceTo(v2);
-                beamRef.current.scale.set(1, distance, 1);
+
+                // Beam Logic
+                beamRef.current.visible = beamActiveRef.current;
+                beamRef.current.scale.set(1, 1, distance); // Scale Z
+                beamRef.current.lookAt(v2);
 
                 // --- DEBUG UPDATE ---
                 if (debugEnabledRef.current) {
                     if (isoMarker) isoMarker.visible = true;
 
+                    // Update Visuals every frame for smoothness
+                    rayLine.visible = true;
+                    closestPtMarker.visible = true;
+                    connLine.visible = true;
+
+                    // Update Ray Line (Red) - Finite Segment SRC->DET
+                    const positions = rayLine.geometry.attributes.position.array;
+                    v1.toArray(positions, 0); // Start
+                    v2.toArray(positions, 3); // End
+                    rayLine.geometry.attributes.position.needsUpdate = true;
+
+                    // Calc Geometry (Allocation-Free)
+                    // 1. Project to Infinite Line (computes vSeg=AB, vecToI=AP)
+                    // Returns UNCLAMPED t
+                    const t = projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
+
+                    // 2. Clamp t to [0, 1] for Segment
+                    const tClamped = Math.max(0, Math.min(1, t));
+
+                    // 3. Compute Clamped Closest Point on Segment
+                    closestPoint.copy(v1).addScaledVector(vSeg, tClamped);
+
+                    // Update Closest Point Marker (Yellow) - CLAMPED
+                    closestPtMarker.position.copy(closestPoint);
+
+                    // Update Connector Line (Green) - CLAMPED
+                    const connPos = connLine.geometry.attributes.position.array;
+                    ISO_WORLD.toArray(connPos, 0);
+                    closestPoint.toArray(connPos, 3);
+                    connLine.geometry.attributes.position.needsUpdate = true;
+
                     const now = performance.now();
                     if (now - lastDebugUpdateRef.current > 100) { // 10Hz
                         lastDebugUpdateRef.current = now;
 
-                        const midpoint = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
-                        const distToIso = midpoint.distanceTo(ISO_WORLD);
+                        // IsoRay: Distance to INFINITE line (via tempVec)
+                        const isoRayDist = ISO_WORLD.distanceTo(tempVec);
 
-                        // IsoLine Logic (Distance from ISO to source-detector ray)
-                        vSeg.subVectors(v2, v1);
-                        const lenSq = vSeg.lengthSq();
-                        vecToI.subVectors(ISO_WORLD, v1);
-                        let t = lenSq > 0 ? vecToI.dot(vSeg) / lenSq : 0;
-                        t = Math.max(0, Math.min(1, t));
-                        closestPoint.copy(v1).addScaledVector(vSeg, t);
-                        const isoLineDist = closestPoint.distanceTo(ISO_WORLD);
+                        // IsoSeg: Distance to FINITE segment (via closestPoint)
+                        const isoSegDist = ISO_WORLD.distanceTo(closestPoint);
+
+                        // MidToIso: Midpoint of Segment
+                        tempVec.addVectors(v1, v2).multiplyScalar(0.5);
+                        const midToIso = tempVec.distanceTo(ISO_WORLD);
 
                         const newReadout = {
                             src: v1.toArray().map(n => n.toFixed(3)),
                             det: v2.toArray().map(n => n.toFixed(3)),
                             sid: distance.toFixed(3),
-                            midToIso: distToIso.toFixed(3),
-                            isoLine: isoLineDist.toFixed(3),
+                            midToIso: midToIso.toFixed(3),
+                            isoRay: isoRayDist.toFixed(3),
+                            isoSeg: isoSegDist.toFixed(3),
+                            t: t.toFixed(3) // Show UNCLAMPED t
                         };
                         setDebugReadout(newReadout);
                     }
                 } else {
                     if (isoMarker) isoMarker.visible = false;
+                    rayLine.visible = false;
+                    closestPtMarker.visible = false;
+                    connLine.visible = false;
                 }
             }
 
@@ -634,9 +664,24 @@ const App = () => {
         window.addEventListener('resize', handleResize);
 
         return () => {
+            cancelAnimationFrame(reqId);
             window.removeEventListener('resize', handleResize);
             if (mountRef.current) mountRef.current.innerHTML = '';
+
             renderer.dispose();
+            orbit.dispose();
+
+            // Dispose scene resources
+            scene.traverse((object) => {
+                if (object.isMesh) {
+                    object.geometry.dispose();
+                    if (object.material.isMaterial) {
+                        object.material.dispose();
+                    } else if (Array.isArray(object.material)) {
+                        object.material.forEach(m => m.dispose());
+                    }
+                }
+            });
         };
     }, []);
 
@@ -655,10 +700,7 @@ const App = () => {
     }, [controls]);
 
     useEffect(() => {
-        if (beamRef.current) {
-            beamRef.current.visible = beamActive;
-            beamRef.current.material.opacity = beamActive ? 0.4 : 0.0;
-        }
+        beamActiveRef.current = beamActive;
     }, [beamActive]);
 
     const containerStyle = { position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#eef2f5', fontFamily: 'sans-serif', color: '#333' };
@@ -680,8 +722,11 @@ const App = () => {
                     <div>SRC: [{debugReadout.src.join(', ')}]</div>
                     <div>DET: [{debugReadout.det.join(', ')}]</div>
                     <div>SID: {debugReadout.sid} m</div>
-                    <div>IsoDist: {debugReadout.midToIso} m</div>
-                    <div>IsoLine: {debugReadout.isoLine} m</div>
+                    <hr style={{ borderColor: '#444', margin: '5px 0' }} />
+                    <div>MidToIso: {debugReadout.midToIso} m</div>
+                    <div style={{ color: '#fff' }}>IsoRay: {debugReadout.isoRay} m</div>
+                    <div>IsoSeg: {debugReadout.isoSeg} m</div>
+                    <div>t: {debugReadout.t}</div>
                     <hr style={{ borderColor: '#444', margin: '5px 0' }} />
                     <div>Lift: {controls.lift.toFixed(3)}</div>
                     <div>C-Rot: {(controls.column_rot * 180 / Math.PI).toFixed(1)}°</div>
