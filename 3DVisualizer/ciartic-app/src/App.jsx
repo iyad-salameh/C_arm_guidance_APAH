@@ -71,23 +71,113 @@ const CONTROL_SPECS = {
 };
 
 // --- ANATOMY ZONE HELPER (single source of truth) ---
-const ANATOMY_ZONES = [
-    { maxCartX: 1.2, key: 'head', label: 'HEAD / NECK' },
-    { maxCartX: 1.7, key: 'chest', label: 'CHEST / THORAX' },
-    { maxCartX: 2.1, key: 'abdomen', label: 'ABDOMEN / PELVIS' },
-    { maxCartX: 2.3, key: 'femur', label: 'FEMUR / KNEE' },
-    { maxCartX: Infinity, key: 'legs', label: 'LEGS / FEET' },
-];
-const getAnatomyZone = (cart_x) => ANATOMY_ZONES.find(z => cart_x < z.maxCartX) || ANATOMY_ZONES[ANATOMY_ZONES.length - 1];
+// --- ANATOMY ZONE HELPER (single source of truth) ---
+const ZONE_DEFS = {
+    miss: { key: 'miss', label: 'MISS (OFF PATIENT)' },
 
-// Helper: Compute region from normalized Local Y (0=Feet, 1=Head approx)
-const computeBeamRegionFromLocalY = (normY) => {
-    // Tunable zones based on normalized height (0..1)
-    if (normY > 0.78) return "HEAD / NECK";
-    if (normY > 0.58) return "CHEST / THORAX";
-    if (normY > 0.35) return "ABDOMEN / PELVIS";
-    if (normY > 0.175) return "FEMUR / KNEE";
-    return "LEGS / FEET";
+    // Core axial skeleton
+    head: { key: 'head', label: 'HEAD / NECK' },
+    thorax: { key: 'thorax', label: 'CHEST / THORAX' },
+    abdomen: { key: 'abdomen', label: 'ABDOMEN' },
+    pelvis: { key: 'pelvis', label: 'PELVIS / HIP' },
+
+    // Upper limb (both sides)
+    shoulder: { key: 'shoulder', label: 'SHOULDER / CLAVICLE' },
+    humerus: { key: 'humerus', label: 'HUMERUS / ELBOW' },
+    forearm: { key: 'forearm', label: 'FOREARM / WRIST' },
+    hand: { key: 'hand', label: 'HAND / FINGERS' },
+
+    // Lower limb
+    femur: { key: 'femur', label: 'FEMUR' },
+    knee: { key: 'knee', label: 'KNEE' },
+    tibia: { key: 'tibia', label: 'TIBIA / FIBULA' },
+    ankle: { key: 'ankle', label: 'ANKLE' },
+    foot: { key: 'foot', label: 'FOOT / TOES' },
+};
+
+// Axis Mapping Config (Swap if your GLB is rotated)
+const ANATOMY_AXES = { up: 'y', leftRight: 'x', frontBack: 'z' };
+
+// Helper: Compute Zone from Local Point & Bounds
+const computeZoneFromLocalPoint = (local, bounds) => {
+    // 1. Normalize based on configured axes
+    const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
+
+    // Safety check for zero-size bounds
+    const spanX = Math.max(1e-6, maxX - minX);
+    const spanY = Math.max(1e-6, maxY - minY);
+    const spanZ = Math.max(1e-6, maxZ - minZ);
+
+    const normX = Math.max(0, Math.min(1, (local.x - minX) / spanX));
+    const normY = Math.max(0, Math.min(1, (local.y - minY) / spanY));
+    const normZ = Math.max(0, Math.min(1, (local.z - minZ) / spanZ));
+
+    // Map to anatomy axes (Default: Y=Up, X/Z=Lateral Plane)
+    // Using simple property access based on config
+    // Note: This assumes bounds match logical axes but
+    // the semantic meaning (Up/Lateral) is what we map here.
+
+    let normUp = normY;     // Default Y
+    let nLat1 = normX - 0.5; // Center X
+    let nLat2 = normZ - 0.5; // Center Z
+
+    if (ANATOMY_AXES.up === 'z') {
+        normUp = normZ;
+        nLat1 = normX - 0.5;
+        nLat2 = normY - 0.5;
+    } else if (ANATOMY_AXES.up === 'x') {
+        normUp = normX;
+        nLat1 = normY - 0.5;
+        nLat2 = normZ - 0.5;
+    }
+
+    // Lateral Distance (from center line)
+    const lateral = Math.sqrt(nLat1 * nLat1 + nLat2 * nLat2);
+
+    // 3. Classification Rules
+    let zone = ZONE_DEFS.foot; // Default bottom
+
+    // Rule 1: Upper Limb Detection
+    const ARM_LATERAL_THRESHOLD = 0.28;
+    const ARM_MIN_NORM_UP = 0.34; // Guard: Must be above pelvis height to be an arm
+    const HAND_LATERAL_THRESHOLD = 0.38; // Hands are further out
+
+    const isArm = lateral > ARM_LATERAL_THRESHOLD && normUp > ARM_MIN_NORM_UP;
+
+    if (isArm) {
+        if (normUp > 0.72) zone = ZONE_DEFS.shoulder;
+        else if (normUp > 0.55) zone = ZONE_DEFS.humerus;
+        else if (normUp > 0.38) zone = ZONE_DEFS.forearm;
+        else {
+            // Hand check: needs to be lateral enough
+            if (lateral > HAND_LATERAL_THRESHOLD) zone = ZONE_DEFS.hand;
+            else zone = ZONE_DEFS.forearm;
+        }
+    } else {
+        // Rule 2: Axial Skeleton (Head/Torso/Pelvis)
+        if (normUp > 0.86) zone = ZONE_DEFS.head;
+        else if (normUp > 0.68) zone = ZONE_DEFS.thorax;
+        else if (normUp > 0.52) zone = ZONE_DEFS.abdomen;
+        else if (normUp > 0.42) zone = ZONE_DEFS.pelvis;
+
+        // Rule 3: Lower Limb Segmentation
+        else if (normUp > 0.26) zone = ZONE_DEFS.femur;
+        else if (normUp > 0.22) zone = ZONE_DEFS.knee;
+        else if (normUp > 0.10) zone = ZONE_DEFS.tibia;
+        else if (normUp > 0.06) zone = ZONE_DEFS.ankle;
+        else zone = ZONE_DEFS.foot;
+    }
+
+    return { zone, normX, normY, normZ, lateral, normUp };
+};
+
+// Legacy fallback for cart_x logic (mapped to new keys)
+const getAnatomyZone = (cart_x) => {
+    if (cart_x < 1.2) return ZONE_DEFS.head;
+    if (cart_x < 1.7) return ZONE_DEFS.thorax;
+    if (cart_x < 2.1) return ZONE_DEFS.abdomen;
+    if (cart_x < 2.3) return ZONE_DEFS.femur;
+    return ZONE_DEFS.tibia; // Proxy for legs
 };
 
 
@@ -115,13 +205,15 @@ const App = () => {
     const beamActiveRef = useRef(false);
     const controlsRef = useRef(controls);
 
-    const beamRegionRef = useRef("WAITING FOR PATIENT...");
+    const beamRegionRef = useRef("WAITING FOR PATIENT..."); // Kept for label string
+    const beamZoneKeyRef = useRef('miss'); // NEW: Store key
     const beamHitRef = useRef(false);
     const beamNormYRef = useRef(null);
     const [beamRegionUI, setBeamRegionUI] = useState("WAITING FOR PATIENT...");
+    const [beamZoneKeyUI, setBeamZoneKeyUI] = useState('miss'); // For header color
 
     const patientModelRef = useRef(null);
-    const patientBoundsRef = useRef({ ready: false, minY: 0, maxY: 0 });
+    const patientBoundsRef = useRef({ ready: false, minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 });
 
     useEffect(() => { controlsRef.current = controls; }, [controls]);
 
@@ -137,22 +229,15 @@ const App = () => {
     const detAnchorRef = useRef(new THREE.Group());
 
     // --- DYNAMIC ANATOMY GENERATOR ---
-    const generateRealisticXray = (currentControls = controls, regionLabelOverride = null) => {
+    const generateRealisticXray = (currentControls = controls, zoneKeyOverride = null) => {
         const { cart_x, orbital_slide, wig_wag } = currentControls;
 
         // 1. Determine Anatomy Zone
-        let zone = { key: 'legs', label: 'LEGS / FEET' }; // Default
+        let zone = ZONE_DEFS.miss; // Default
 
-        if (regionLabelOverride) {
-            const label = regionLabelOverride;
-            if (label.includes("MISS") || label.includes("WAITING")) {
-                zone = { key: 'none', label }; // New "none" zone
-            } else if (label.includes("HEAD")) zone = { key: 'head', label };
-            else if (label.includes("CHEST")) zone = { key: 'chest', label };
-            else if (label.includes("ABDOMEN")) zone = { key: 'abdomen', label };
-            else if (label.includes("FEMUR")) zone = { key: 'femur', label };
-            else if (label.includes("LEGS")) zone = { key: 'legs', label };
-            else zone = { key: 'legs', label }; // Fallback
+        if (zoneKeyOverride) {
+            // New path: pass key directly
+            zone = ZONE_DEFS[zoneKeyOverride] || ZONE_DEFS.miss;
         } else {
             // Fallback to cart_x if no override (maintenance compatibility)
             zone = getAnatomyZone(cart_x);
@@ -165,100 +250,168 @@ const App = () => {
         const viewWidth = Math.abs(Math.cos(orbital_slide)) * 0.8 + 0.2;
         const spineOffset = Math.sin(orbital_slide) * 20; // Spine moves off-center during rotation
 
-        // -- GENERATION LOGIC --
-        if (zone.key === 'none') {
-            // NOISE ONLY - No SVG content
-            svgContent = "";
-        } else if (zone.key === 'head') {
-            // Skull & Cervical Spine
-            svgContent = `
-            <ellipse cx="${50 + spineOffset * 0.5}" cy="40" rx="${30 * viewWidth}" ry="35" fill="#ddd" opacity="0.9" filter="url(#blur)" />
-            <path d="M ${50 + spineOffset * 0.5 - 20 * viewWidth} 50 Q ${50 + spineOffset * 0.5} 80 ${50 + spineOffset * 0.5 + 20 * viewWidth} 50" stroke="#aaa" stroke-width="3" fill="none" opacity="0.8" />
-            <rect x="${45 + spineOffset}" y="70" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
-            <rect x="${45 + spineOffset}" y="88" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
-        `;
-        } else if (zone.key === 'chest') {
-            // Ribs & Thoracic Spine
-            const scrollY = (cart_x % 0.2) * 500;
+        // Common bone styles
+        const boneFill = "#ddd";
+        const boneOpacity = "0.85";
+        const jointOpacity = "0.9";
 
-            let ribs = "";
-            for (let i = 0; i < 6; i++) {
-                const yBase = (i * 18) - scrollY + 20;
-                if (yBase > -10 && yBase < 110) {
-                    ribs += `
-                    <path d="M ${50 + spineOffset} ${yBase} Q ${10} ${yBase + 10} ${15} ${yBase + 25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
-                    <path d="M ${50 + spineOffset} ${yBase} Q ${90} ${yBase + 10} ${85} ${yBase + 25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
+        // -- GENERATION LOGIC (Skeleton-Aware) --
+        switch (zone.key) {
+            case 'miss':
+                // NOISE ONLY - No SVG content
+                svgContent = "";
+                break;
+
+            case 'head':
+                // Skull & Cervical Spine
+                svgContent = `
+                <ellipse cx="${50 + spineOffset * 0.5}" cy="40" rx="${30 * viewWidth}" ry="35" fill="${boneFill}" opacity="0.9" filter="url(#blur)" />
+                <path d="M ${50 + spineOffset * 0.5 - 20 * viewWidth} 50 Q ${50 + spineOffset * 0.5} 80 ${50 + spineOffset * 0.5 + 20 * viewWidth} 50" stroke="#aaa" stroke-width="3" fill="none" opacity="0.8" />
+                <rect x="${45 + spineOffset}" y="70" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
+                <rect x="${45 + spineOffset}" y="88" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
                 `;
+                break;
+
+            case 'thorax':
+            case 'chest': // Legacy key mapping just in case
+                // Ribs & Thoracic Spine
+                const scrollYThorax = (cart_x % 0.2) * 500;
+                let ribs = "";
+                for (let i = 0; i < 6; i++) {
+                    const yBase = (i * 18) - scrollYThorax + 20;
+                    if (yBase > -10 && yBase < 110) {
+                        ribs += `
+                        <path d="M ${50 + spineOffset} ${yBase} Q ${10} ${yBase + 10} ${15} ${yBase + 25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
+                        <path d="M ${50 + spineOffset} ${yBase} Q ${90} ${yBase + 10} ${85} ${yBase + 25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
+                        `;
+                    }
                 }
-            }
-
-            let spine = "";
-            for (let i = 0; i < 8; i++) {
-                const yBase = (i * 12) - scrollY + 10;
-                if (yBase > -10 && yBase < 110) {
-                    spine += `<rect x="${44 + spineOffset}" y="${yBase}" width="12" height="10" rx="2" fill="#eee" opacity="0.8" />`;
+                let spineT = "";
+                for (let i = 0; i < 8; i++) {
+                    const yBase = (i * 12) - scrollYThorax + 10;
+                    if (yBase > -10 && yBase < 110) {
+                        spineT += `<rect x="${44 + spineOffset}" y="${yBase}" width="12" height="10" rx="2" fill="#eee" opacity="0.8" />`;
+                    }
                 }
-            }
+                const heartOpacity = Math.max(0, Math.cos(orbital_slide) * 0.3);
+                const heart = `<ellipse cx="${60 + spineOffset}" cy="60" rx="20" ry="25" fill="#eee" opacity="${heartOpacity}" filter="url(#blur)" />`;
+                svgContent = ribs + spineT + heart;
+                break;
 
-            // Heart Shadow
-            const heartOpacity = Math.max(0, Math.cos(orbital_slide) * 0.3);
-            const heart = `<ellipse cx="${60 + spineOffset}" cy="60" rx="20" ry="25" fill="#eee" opacity="${heartOpacity}" filter="url(#blur)" />`;
-
-            svgContent = ribs + spine + heart;
-
-        } else if (zone.key === 'abdomen') {
-            // Lumbar Spine & Pelvis Wings
-            const scrollY = (cart_x % 0.2) * 400;
-
-            let spine = "";
-            for (let i = 0; i < 5; i++) {
-                const yBase = (i * 16) - scrollY + 10;
-                if (yBase > -10 && yBase < 110) {
-                    spine += `<rect x="${42 + spineOffset}" y="${yBase}" width="16" height="14" rx="3" fill="#eee" opacity="0.9" />`;
+            case 'abdomen':
+            case 'pelvis': // Sharing style for now, but pelvis has wings
+                // Lumbar Spine & Pelvis Wings
+                const scrollYAbs = (cart_x % 0.2) * 400;
+                let spineL = "";
+                for (let i = 0; i < 5; i++) {
+                    const yBase = (i * 16) - scrollYAbs + 10;
+                    if (yBase > -10 && yBase < 110) {
+                        spineL += `<rect x="${42 + spineOffset}" y="${yBase}" width="16" height="14" rx="3" fill="#eee" opacity="0.9" />`;
+                    }
                 }
-            }
+                // Pelvis Wings (visible if lower abdomen or pelvis)
+                let pelvisW = "";
+                if (zone.key === 'pelvis' || cart_x > 1.9) {
+                    pelvisW = `
+                    <path d="M ${50 + spineOffset} 60 Q ${10} 60 ${15} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
+                    <path d="M ${50 + spineOffset} 60 Q ${90} 60 ${85} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
+                    `;
+                }
+                svgContent = spineL + pelvisW;
+                break;
 
-            // Pelvis
-            let pelvis = "";
-            if (cart_x > 1.9) {
-                pelvis = `
-                <path d="M ${50 + spineOffset} 60 Q ${10} 60 ${15} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
-                <path d="M ${50 + spineOffset} 60 Q ${90} 60 ${85} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
-            `;
-            }
-            svgContent = spine + pelvis;
+            case 'shoulder':
+                svgContent = `
+                <!-- Clavicle -->
+                <path d="M ${20 + spineOffset} 30 Q ${50 + spineOffset} 40 ${80 + spineOffset} 30" stroke="${boneFill}" stroke-width="8" opacity="${boneOpacity}" filter="url(#blur)" />
+                <!-- Scapula Hint -->
+                <path d="M ${60 + spineOffset} 40 L ${80 + spineOffset} 80 L ${50 + spineOffset} 70 Z" fill="${boneFill}" opacity="0.5" filter="url(#blur)" />
+                <!-- Humeral Head -->
+                <circle cx="${80 + spineOffset}" cy="40" r="12" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
+                `;
+                break;
 
-        } else if (zone.key === 'femur') {
-            // FEMUR - Thicker bone, widens at bottom (knee)
-            const scrollY = (cart_x % 0.3) * 100; // Slight scroll
-            svgContent = `
-            <!-- Main Femur Shaft -->
-            <rect x="${42 + spineOffset}" y="-20" width="16" height="140" rx="6" fill="#ddd" opacity="0.85" filter="url(#blur)" />
-            
-            <!-- Knee Condyles (widening at bottom) -->
-            <ellipse cx="${42 + spineOffset}" cy="90" rx="12" ry="15" fill="#ddd" opacity="0.9" filter="url(#blur)" />
-            <ellipse cx="${58 + spineOffset}" cy="90" rx="12" ry="15" fill="#ddd" opacity="0.9" filter="url(#blur)" />
+            case 'humerus':
+                svgContent = `
+                <!-- Humerus Shaft -->
+                <rect x="${42 + spineOffset}" y="-10" width="14" height="120" rx="5" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <rect x="${46 + spineOffset}" y="-10" width="6" height="120" rx="2" fill="#fff" opacity="0.2" />
+                `;
+                break;
 
-            <!-- Marrow Cavity hint -->
-            <rect x="${46 + spineOffset}" y="-10" width="8" height="120" rx="2" fill="#fff" opacity="0.2" />
-            `;
+            case 'forearm':
+                svgContent = `
+                <!-- Radius -->
+                <rect x="${35 + spineOffset}" y="-10" width="10" height="120" rx="3" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <!-- Ulna -->
+                <rect x="${55 + spineOffset}" y="-10" width="8" height="120" rx="3" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                `;
+                break;
 
-        } else { // LEGS (Tib/Fib default)
-            // LEGS - Two distinct thinner bones, ankle hint
-            const scrollY = (cart_x % 0.5) * 200;
+            case 'hand':
+                svgContent = `
+                <!-- Wrist Carpals -->
+                <circle cx="${50 + spineOffset}" cy="10" r="15" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
+                <!-- Metacarpals (5 bones) -->
+                ${[0, 1, 2, 3, 4].map(i => `<rect x="${30 + spineOffset + i * 10}" y="30" width="6" height="30" rx="2" fill="${boneFill}" opacity="${boneOpacity}" />`).join('')}
+                <!-- Phalanges -->
+                ${[0, 1, 2, 3, 4].map(i => `<rect x="${30 + spineOffset + i * 10}" y="65" width="5" height="25" rx="1" fill="${boneFill}" opacity="${boneOpacity}" />`).join('')}
+                `;
+                break;
 
-            svgContent = `
-            <!-- Tibia (Thicker) -->
-            <rect x="${35 + spineOffset}" y="-20" width="12" height="140" rx="4" fill="#ddd" opacity="0.8" filter="url(#blur)" />
-            <!-- Fibula (Thinner) -->
-            <rect x="${55 + spineOffset}" y="-20" width="8" height="140" rx="3" fill="#ddd" opacity="0.7" filter="url(#blur)" />
-            
-            <!-- Ankle Joint hint (at bottom) -->
-            <path d="M ${30 + spineOffset} 100 Q ${45 + spineOffset} 115 ${60 + spineOffset} 100" stroke="#ccc" stroke-width="5" fill="none" opacity="0.6" />
-            
-            <!-- Marrow hint -->
-            <rect x="${38 + spineOffset}" y="${80 - scrollY}" width="6" height="140" fill="#fff" opacity="0.2" /> 
-        `;
+            case 'femur':
+                svgContent = `
+                <!-- Main Femur Shaft -->
+                <rect x="${42 + spineOffset}" y="-20" width="18" height="140" rx="6" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <!-- Marrow Cavity hint -->
+                <rect x="${47 + spineOffset}" y="-10" width="8" height="120" rx="2" fill="#fff" opacity="0.2" />
+                `;
+                break;
+
+            case 'knee':
+                svgContent = `
+                <!-- Femur Condyles -->
+                <circle cx="${40 + spineOffset}" cy="30" r="15" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
+                <circle cx="${60 + spineOffset}" cy="30" r="15" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
+                <!-- Tibia Plateau -->
+                <rect x="${30 + spineOffset}" y="50" width="40" height="15" rx="4" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <!-- Patella Shadow -->
+                <circle cx="${50 + spineOffset}" cy="40" r="12" fill="#fff" opacity="0.3" filter="url(#blur)" />
+                `;
+                break;
+
+            case 'tibia':
+                svgContent = `
+                <!-- Tibia (Thicker) -->
+                <rect x="${35 + spineOffset}" y="-20" width="14" height="140" rx="4" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <!-- Fibula (Thinner) -->
+                <rect x="${60 + spineOffset}" y="-20" width="6" height="140" rx="3" fill="${boneFill}" opacity="0.7" filter="url(#blur)" />
+                `;
+                break;
+
+            case 'ankle':
+                svgContent = `
+                <!-- Tibia/Fibula Ends -->
+                <rect x="${35 + spineOffset}" y="10" width="14" height="40" rx="4" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <rect x="${60 + spineOffset}" y="10" width="6" height="40" rx="3" fill="${boneFill}" opacity="0.7" filter="url(#blur)" />
+                <!-- Talus Dome -->
+                <path d="M ${30 + spineOffset} 60 Q ${50 + spineOffset} 45 ${70 + spineOffset} 60" stroke="${boneFill}" stroke-width="10" fill="none" opacity="${jointOpacity}" filter="url(#blur)" />
+                `;
+                break;
+
+            case 'foot':
+                svgContent = `
+                <!-- Tarsals Cluster -->
+                <path d="M ${30 + spineOffset} 20 Q ${70 + spineOffset} 10 ${70 + spineOffset} 50 Q ${30 + spineOffset} 60 ${30 + spineOffset} 20" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
+                <!-- Metatarsals -->
+                ${[0, 1, 2, 3, 4].map(i => `<rect x="${30 + spineOffset + i * 8}" y="60" width="5" height="30" rx="1" fill="${boneFill}" opacity="${boneOpacity}" />`).join('')}
+                `;
+                break;
+
+            default:
+                // Fallback (Generic Bone)
+                svgContent = `<rect x="${45 + spineOffset}" y="0" width="10" height="100" fill="${boneFill}" opacity="0.5" />`;
+                break;
         }
 
         // Update UI state with anatomy name
@@ -346,12 +499,12 @@ const App = () => {
 
     const handleTakeXray = () => {
         const shotControls = { ...controls };
-        const regionAtShot = beamHitRef.current ? beamRegionRef.current : "MISS (OFF PATIENT)";
+        const regionKeyAtShot = beamHitRef.current ? beamZoneKeyRef.current : "miss";
 
         setBeamActive(true);
         setTimeout(() => {
             try {
-                setLastXray(generateRealisticXray(shotControls, regionAtShot));
+                setLastXray(generateRealisticXray(shotControls, regionKeyAtShot));
             } catch (e) {
                 console.error("Xray Gen Error", e);
             }
@@ -487,8 +640,9 @@ const App = () => {
             const patientBox = new THREE.Box3().setFromObject(patientModel);
             patientBoundsRef.current = {
                 ready: true,
-                minY: patientBox.min.y,
-                maxY: patientBox.max.y
+                minX: patientBox.min.x, maxX: patientBox.max.x,
+                minY: patientBox.min.y, maxY: patientBox.max.y,
+                minZ: patientBox.min.z, maxZ: patientBox.max.z
             };
             patientModelRef.current = patientModel;
 
@@ -777,7 +931,7 @@ const App = () => {
 
                     // --- 1. ALWAYS COMPUTE BEAM REGION (Physics) ---
                     const bounds = patientBoundsRef.current;
-                    let regionString = "MISS (OFF PATIENT)";
+                    let zoneResult = ZONE_DEFS.miss;
                     let isHitting = false;
                     let normY = 0;
 
@@ -811,24 +965,23 @@ const App = () => {
                                 // Local Mapping
                                 patientModelRef.current.worldToLocal(boxMid); // Mutates boxMid to local space
 
-                                // Normalize Y
-                                const { minY, maxY } = bounds;
-                                const span = Math.max(1e-6, maxY - minY);
-                                normY = (boxMid.y - minY) / span;
-
-                                // Map to Region
-                                regionString = computeBeamRegionFromLocalY(normY);
+                                // Compute Zone from Local Point
+                                const result = computeZoneFromLocalPoint(boxMid, bounds);
+                                zoneResult = result.zone;
+                                normY = result.normUp; // Use aligned 'Up' for debug/refs
                             }
                         }
-                    } else if (!bounds.ready) {
-                        regionString = "WAITING FOR PATIENT...";
                     }
 
                     // Update Refs & UI (Throttled)
-                    beamRegionRef.current = regionString;
+                    beamZoneKeyRef.current = zoneResult.key;
+                    beamRegionRef.current = zoneResult.label; // Keep label for existing consumers if any
                     beamHitRef.current = isHitting;
+                    // Store normalized Y (Up) for debugging / tuning
                     beamNormYRef.current = isHitting ? normY : null;
-                    setBeamRegionUI(regionString);
+
+                    setBeamRegionUI(zoneResult.label);
+                    setBeamZoneKeyUI(zoneResult.key);
 
 
                     // --- 2. DEBUG READOUT (Optional) ---
@@ -872,7 +1025,7 @@ const App = () => {
                             t: t.toFixed(3), // Show UNCLAMPED t
                             beamAngle: angleDeg.toFixed(3),
                             beamErr: beamBaseErr.toFixed(3),
-                            beamRegion: regionString,
+                            beamRegion: zoneResult.label,
                             hitStatus: isHitting ? "HIT" : "MISS",
                             normY: isHitting ? normY.toFixed(3) : "NA"
                         };
@@ -983,7 +1136,7 @@ const App = () => {
                 <div style={{ backgroundColor: '#111', borderBottom: '1px solid #333', padding: '5px 10px', fontSize: '9px', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between', color: '#aaa' }}>
                     <span>FLUORO - LIVE VIEW</span>
                     <span style={{
-                        color: beamRegionUI.includes("MISS") ? '#ff3333' : '#00ffaa',
+                        color: beamZoneKeyUI === 'miss' ? '#ff3333' : '#00ffaa',
                         fontWeight: 'bold',
                         marginLeft: '10px'
                     }}>
