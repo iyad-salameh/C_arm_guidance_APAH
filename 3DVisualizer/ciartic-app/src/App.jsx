@@ -18,7 +18,7 @@ const R2D = 180 / Math.PI;
 const DEVICE_PROFILE = {
     limits: {
         // Translations (meters)
-        lift: { min: -0.5, max: 0.5 },
+        lift: { min: -0.5, max: 0.05 },
         cart_x: { min: 0.8, max: 2.5 },
         cart_z: { min: -1.5, max: 1.5 },
         // Rotations (degrees) - will be converted to radians for control limits
@@ -70,6 +70,26 @@ const CONTROL_SPECS = {
     },
 };
 
+// --- ANATOMY ZONE HELPER (single source of truth) ---
+const ANATOMY_ZONES = [
+    { maxCartX: 1.2, key: 'head', label: 'HEAD / NECK' },
+    { maxCartX: 1.7, key: 'chest', label: 'CHEST / THORAX' },
+    { maxCartX: 2.1, key: 'abdomen', label: 'ABDOMEN / PELVIS' },
+    { maxCartX: 2.3, key: 'femur', label: 'FEMUR / KNEE' },
+    { maxCartX: Infinity, key: 'legs', label: 'LEGS / FEET' },
+];
+const getAnatomyZone = (cart_x) => ANATOMY_ZONES.find(z => cart_x < z.maxCartX) || ANATOMY_ZONES[ANATOMY_ZONES.length - 1];
+
+// Helper: Compute region from normalized Local Y (0=Feet, 1=Head approx)
+const computeBeamRegionFromLocalY = (normY) => {
+    // Tunable zones based on normalized height (0..1)
+    if (normY > 0.78) return "HEAD / NECK";
+    if (normY > 0.58) return "CHEST / THORAX";
+    if (normY > 0.35) return "ABDOMEN / PELVIS";
+    if (normY > 0.175) return "FEMUR / KNEE";
+    return "LEGS / FEET";
+};
+
 
 // --- MAIN APP ---
 const App = () => {
@@ -93,6 +113,17 @@ const App = () => {
     const debugEnabledRef = useRef(false);
     const lastDebugUpdateRef = useRef(0);
     const beamActiveRef = useRef(false);
+    const controlsRef = useRef(controls);
+
+    const beamRegionRef = useRef("WAITING FOR PATIENT...");
+    const beamHitRef = useRef(false);
+    const beamNormYRef = useRef(null);
+    const [beamRegionUI, setBeamRegionUI] = useState("WAITING FOR PATIENT...");
+
+    const patientModelRef = useRef(null);
+    const patientBoundsRef = useRef({ ready: false, minY: 0, maxY: 0 });
+
+    useEffect(() => { controlsRef.current = controls; }, [controls]);
 
     // Scene Graph Refs
     const cartRef = useRef(null);
@@ -106,12 +137,28 @@ const App = () => {
     const detAnchorRef = useRef(new THREE.Group());
 
     // --- DYNAMIC ANATOMY GENERATOR ---
-    const generateRealisticXray = (currentControls = controls) => {
+    const generateRealisticXray = (currentControls = controls, regionLabelOverride = null) => {
         const { cart_x, orbital_slide, wig_wag } = currentControls;
 
-        // 1. Determine Anatomy Zone based on Cart X position
-        // Tuning these ranges based on the patient position (0, 1.45, 0) relative to cart
-        let anatomyType = "Unknown";
+        // 1. Determine Anatomy Zone
+        let zone = { key: 'legs', label: 'LEGS / FEET' }; // Default
+
+        if (regionLabelOverride) {
+            const label = regionLabelOverride;
+            if (label.includes("MISS") || label.includes("WAITING")) {
+                zone = { key: 'none', label }; // New "none" zone
+            } else if (label.includes("HEAD")) zone = { key: 'head', label };
+            else if (label.includes("CHEST")) zone = { key: 'chest', label };
+            else if (label.includes("ABDOMEN")) zone = { key: 'abdomen', label };
+            else if (label.includes("FEMUR")) zone = { key: 'femur', label };
+            else if (label.includes("LEGS")) zone = { key: 'legs', label };
+            else zone = { key: 'legs', label }; // Fallback
+        } else {
+            // Fallback to cart_x if no override (maintenance compatibility)
+            zone = getAnatomyZone(cart_x);
+        }
+
+        const anatomyType = zone.label;
         let svgContent = "";
 
         // Normalize rotation for view width (cos effect for rotation)
@@ -119,8 +166,10 @@ const App = () => {
         const spineOffset = Math.sin(orbital_slide) * 20; // Spine moves off-center during rotation
 
         // -- GENERATION LOGIC --
-        if (cart_x < 1.2) {
-            anatomyType = "HEAD / NECK";
+        if (zone.key === 'none') {
+            // NOISE ONLY - No SVG content
+            svgContent = "";
+        } else if (zone.key === 'head') {
             // Skull & Cervical Spine
             svgContent = `
             <ellipse cx="${50 + spineOffset * 0.5}" cy="40" rx="${30 * viewWidth}" ry="35" fill="#ddd" opacity="0.9" filter="url(#blur)" />
@@ -128,10 +177,8 @@ const App = () => {
             <rect x="${45 + spineOffset}" y="70" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
             <rect x="${45 + spineOffset}" y="88" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
         `;
-        } else if (cart_x >= 1.2 && cart_x < 1.7) {
-            anatomyType = "CHEST / THORAX";
+        } else if (zone.key === 'chest') {
             // Ribs & Thoracic Spine
-            // Scroll effect: use cart_x decimals to shift ribs up/down
             const scrollY = (cart_x % 0.2) * 500;
 
             let ribs = "";
@@ -153,14 +200,13 @@ const App = () => {
                 }
             }
 
-            // Heart Shadow (only visible in AP mostly)
+            // Heart Shadow
             const heartOpacity = Math.max(0, Math.cos(orbital_slide) * 0.3);
             const heart = `<ellipse cx="${60 + spineOffset}" cy="60" rx="20" ry="25" fill="#eee" opacity="${heartOpacity}" filter="url(#blur)" />`;
 
             svgContent = ribs + spine + heart;
 
-        } else if (cart_x >= 1.7 && cart_x < 2.1) {
-            anatomyType = "ABDOMEN / PELVIS";
+        } else if (zone.key === 'abdomen') {
             // Lumbar Spine & Pelvis Wings
             const scrollY = (cart_x % 0.2) * 400;
 
@@ -172,7 +218,7 @@ const App = () => {
                 }
             }
 
-            // Pelvis only appears at the bottom of this range
+            // Pelvis
             let pelvis = "";
             if (cart_x > 1.9) {
                 pelvis = `
@@ -180,18 +226,38 @@ const App = () => {
                 <path d="M ${50 + spineOffset} 60 Q ${90} 60 ${85} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
             `;
             }
-
             svgContent = spine + pelvis;
 
-        } else {
-            anatomyType = "LEGS / FEMUR";
-            // Long bones
+        } else if (zone.key === 'femur') {
+            // FEMUR - Thicker bone, widens at bottom (knee)
+            const scrollY = (cart_x % 0.3) * 100; // Slight scroll
+            svgContent = `
+            <!-- Main Femur Shaft -->
+            <rect x="${42 + spineOffset}" y="-20" width="16" height="140" rx="6" fill="#ddd" opacity="0.85" filter="url(#blur)" />
+            
+            <!-- Knee Condyles (widening at bottom) -->
+            <ellipse cx="${42 + spineOffset}" cy="90" rx="12" ry="15" fill="#ddd" opacity="0.9" filter="url(#blur)" />
+            <ellipse cx="${58 + spineOffset}" cy="90" rx="12" ry="15" fill="#ddd" opacity="0.9" filter="url(#blur)" />
+
+            <!-- Marrow Cavity hint -->
+            <rect x="${46 + spineOffset}" y="-10" width="8" height="120" rx="2" fill="#fff" opacity="0.2" />
+            `;
+
+        } else { // LEGS (Tib/Fib default)
+            // LEGS - Two distinct thinner bones, ankle hint
             const scrollY = (cart_x % 0.5) * 200;
 
             svgContent = `
-            <rect x="${35 + spineOffset}" y="-20" width="12" height="140" rx="5" fill="#ddd" opacity="0.8" filter="url(#blur)" />
-            <rect x="${55 + spineOffset}" y="-20" width="12" height="140" rx="5" fill="#ddd" opacity="0.8" filter="url(#blur)" />
-            <rect x="${38 + spineOffset}" y="${80 - scrollY}" width="6" height="140" fill="#fff" opacity="0.3" /> 
+            <!-- Tibia (Thicker) -->
+            <rect x="${35 + spineOffset}" y="-20" width="12" height="140" rx="4" fill="#ddd" opacity="0.8" filter="url(#blur)" />
+            <!-- Fibula (Thinner) -->
+            <rect x="${55 + spineOffset}" y="-20" width="8" height="140" rx="3" fill="#ddd" opacity="0.7" filter="url(#blur)" />
+            
+            <!-- Ankle Joint hint (at bottom) -->
+            <path d="M ${30 + spineOffset} 100 Q ${45 + spineOffset} 115 ${60 + spineOffset} 100" stroke="#ccc" stroke-width="5" fill="none" opacity="0.6" />
+            
+            <!-- Marrow hint -->
+            <rect x="${38 + spineOffset}" y="${80 - scrollY}" width="6" height="140" fill="#fff" opacity="0.2" /> 
         `;
         }
 
@@ -237,12 +303,55 @@ const App = () => {
         return `data:image/svg+xml;base64,${btoa(svgString)}`;
     };
 
+    const handleDownloadXray = () => {
+        if (!lastXray) return;
+        try {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1024;
+                canvas.height = 1024;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return;
+
+                // Fill black background (x-rays are usually black/white)
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Draw image
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                canvas.toBlob((blob) => {
+                    if (!blob) return;
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+
+                    // Format: xray_YYYY-MM-DDTHH-mm-ss-sssZ.png
+                    // Simplified ISO format replacement for clean filename
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    link.download = `xray_${timestamp}.png`;
+
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                }, 'image/png');
+            };
+            img.src = lastXray;
+        } catch (e) {
+            console.error("Download failed", e);
+        }
+    };
+
     const handleTakeXray = () => {
         const shotControls = { ...controls };
+        const regionAtShot = beamHitRef.current ? beamRegionRef.current : "MISS (OFF PATIENT)";
+
         setBeamActive(true);
         setTimeout(() => {
             try {
-                setLastXray(generateRealisticXray(shotControls));
+                setLastXray(generateRealisticXray(shotControls, regionAtShot));
             } catch (e) {
                 console.error("Xray Gen Error", e);
             }
@@ -350,7 +459,7 @@ const App = () => {
         const bedGroup = new THREE.Group();
         scene.add(bedGroup);
 
-        const tableTop = new THREE.Mesh(new RoundedBoxGeometry(0.6, 0.05, 2.0, 4, 0.01), matCarbon);
+        const tableTop = new THREE.Mesh(new RoundedBoxGeometry(0.6, 0.05, 2.0, 4, 0.01), matBlue);
         tableTop.position.y = 1.35;
         tableTop.receiveShadow = true;
         bedGroup.add(tableTop);
@@ -374,7 +483,15 @@ const App = () => {
         ]).then(([patientGltf, carmGltf, rsGltf]) => {
             // 1. Patient
             const patientModel = patientGltf.scene;
+            // Capture Local Bounds (before transform)
             const patientBox = new THREE.Box3().setFromObject(patientModel);
+            patientBoundsRef.current = {
+                ready: true,
+                minY: patientBox.min.y,
+                maxY: patientBox.max.y
+            };
+            patientModelRef.current = patientModel;
+
             const patientSize = new THREE.Vector3();
             patientBox.getSize(patientSize);
             const maxDimP = Math.max(patientSize.x, patientSize.y, patientSize.z);
@@ -383,7 +500,7 @@ const App = () => {
                 patientModel.scale.set(scale, scale, scale);
             }
             patientModel.rotation.set(-Math.PI / 2, 0, Math.PI);
-            patientModel.position.set(0, 1.45, 0.0);
+            patientModel.position.set(0, 1.50, 0.0);
             patientModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
             bedGroup.add(patientModel);
 
@@ -548,14 +665,13 @@ const App = () => {
         srcHousing.add(srcAnchor);
 
         // BEAM PHYSICS
-        // Create unit cone aligned with +Y, Apex at (0,0,0), Base at (0,1,0)
-        // Default Cone: height 1, center 0 (range -0.5 to 0.5). Apex at +0.5.
-        // We want Apex at 0.
-        // 1. Rotate X by PI => Apex at -0.5, Base at 0.5
-        // 2. Translate Y +0.5 => Apex at 0, Base at 1.
-        const beamGeo = new THREE.ConeGeometry(1, 1, 32, 1, true);
-        beamGeo.rotateX(Math.PI);
-        beamGeo.translate(0, 0.5, 0);
+        // Create frustum: Source at y=0 (bottom), Detector at y=1 (top)
+        // Cylinder base (bottom) is at -0.5, top at +0.5.
+        // We want Apex at 0 (Source) and Base at 1 (Detector).
+        // RadiusTop = 1 (Detector end), RadiusBottom = 0.05 (Source end, collimated).
+        const beamGeo = new THREE.CylinderGeometry(1, 0.05, 1, 4, 1, true);
+        beamGeo.translate(0, 0.5, 0); // Shift so bottom (Source) is at 0, top (Detector) is at 1
+        beamGeo.rotateY(Math.PI / 4); // Align square profile to axes
 
         const beamMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false });
         const beam = new THREE.Mesh(beamGeo, beamMat);
@@ -575,6 +691,14 @@ const App = () => {
         const dir = new THREE.Vector3(); // Beam direction scratch
         const yAxis = new THREE.Vector3(0, 1, 0); // Reference UP for beam
         const beamAxisWorld = new THREE.Vector3(); // For debug check
+
+        // Raycasting Allocations
+        const rayFwd = new THREE.Ray();
+        const rayBack = new THREE.Ray();
+        const boxEntry = new THREE.Vector3();
+        const boxExit = new THREE.Vector3();
+        const boxMid = new THREE.Vector3();
+        const patientBoxWorld = new THREE.Box3();
 
         let reqId;
         const animate = () => {
@@ -640,15 +764,89 @@ const App = () => {
                     ISO_WORLD.toArray(connPos, 0);
                     closestPoint.toArray(connPos, 3);
                     connLine.geometry.attributes.position.needsUpdate = true;
+                } else {
+                    if (isoMarker) isoMarker.visible = false;
+                    rayLine.visible = false;
+                    closestPtMarker.visible = false;
+                    connLine.visible = false;
+                }
 
-                    const now = performance.now();
-                    if (now - lastDebugUpdateRef.current > 100) { // 10Hz
-                        lastDebugUpdateRef.current = now;
+                const now = performance.now();
+                if (now - lastDebugUpdateRef.current > 100) { // 10Hz
+                    lastDebugUpdateRef.current = now;
+
+                    // --- 1. ALWAYS COMPUTE BEAM REGION (Physics) ---
+                    const bounds = patientBoundsRef.current;
+                    let regionString = "MISS (OFF PATIENT)";
+                    let isHitting = false;
+                    let normY = 0;
+
+                    if (patientModelRef.current && bounds.ready) {
+                        patientBoxWorld.setFromObject(patientModelRef.current);
+
+                        // Forward Ray (SRC -> DET)
+                        rayFwd.set(v1, dir);
+                        const hitEntry = rayFwd.intersectBox(patientBoxWorld, boxEntry);
+
+                        if (hitEntry) {
+                            // Check if entry is within SID (beam length)
+                            const distToEntry = boxEntry.distanceTo(v1);
+                            if (distToEntry <= sid) {
+                                isHitting = true;
+
+                                // Optional: Backward Ray for exit point (DET -> SRC)
+                                // dir is normalized SRC->DET, so reverse for rayBack
+                                tempVec.copy(dir).multiplyScalar(-1);
+                                rayBack.set(v2, tempVec);
+                                const hitExit = rayBack.intersectBox(patientBoxWorld, boxExit);
+
+                                if (hitExit) {
+                                    // Use Midpoint
+                                    boxMid.addVectors(boxEntry, boxExit).multiplyScalar(0.5);
+                                } else {
+                                    // Fallback to entry
+                                    boxMid.copy(boxEntry);
+                                }
+
+                                // Local Mapping
+                                patientModelRef.current.worldToLocal(boxMid); // Mutates boxMid to local space
+
+                                // Normalize Y
+                                const { minY, maxY } = bounds;
+                                const span = Math.max(1e-6, maxY - minY);
+                                normY = (boxMid.y - minY) / span;
+
+                                // Map to Region
+                                regionString = computeBeamRegionFromLocalY(normY);
+                            }
+                        }
+                    } else if (!bounds.ready) {
+                        regionString = "WAITING FOR PATIENT...";
+                    }
+
+                    // Update Refs & UI (Throttled)
+                    beamRegionRef.current = regionString;
+                    beamHitRef.current = isHitting;
+                    beamNormYRef.current = isHitting ? normY : null;
+                    setBeamRegionUI(regionString);
+
+
+                    // --- 2. DEBUG READOUT (Optional) ---
+                    if (debugEnabledRef.current) {
+                        // Re-calc geometry primitives for readout logic if needed, 
+                        // or just rely on standard ones. 
+                        // Note: primitives (v1, v2) are fresh. But 't', 'closestPoint' were 
+                        // computed inside the visual block above. 
+                        // Safest to re-compute specific metrics needed for text.
 
                         // IsoRay: Distance to INFINITE line (via tempVec)
+                        projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
                         const isoRayDist = ISO_WORLD.distanceTo(tempVec);
 
                         // IsoSeg: Distance to FINITE segment (via closestPoint)
+                        const t = projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
+                        const tClamped = Math.max(0, Math.min(1, t));
+                        closestPoint.copy(v1).addScaledVector(vSeg, tClamped);
                         const isoSegDist = ISO_WORLD.distanceTo(closestPoint);
 
                         // MidToIso: Midpoint of Segment
@@ -656,8 +854,13 @@ const App = () => {
                         const midToIso = tempVec.distanceTo(ISO_WORLD);
 
                         // Beam Angle Check (Alignment Debug)
+                        beamRef.current.updateMatrixWorld();
                         beamAxisWorld.copy(yAxis).applyQuaternion(beamRef.current.quaternion);
                         const angleDeg = beamAxisWorld.angleTo(dir) * 180 / Math.PI;
+
+                        // Beam Base Error Check
+                        tempVec.set(0, 1, 0).applyMatrix4(beamRef.current.matrixWorld);
+                        const beamBaseErr = tempVec.distanceTo(v2);
 
                         const newReadout = {
                             src: v1.toArray().map(n => n.toFixed(3)),
@@ -667,17 +870,19 @@ const App = () => {
                             isoRay: isoRayDist.toFixed(3),
                             isoSeg: isoSegDist.toFixed(3),
                             t: t.toFixed(3), // Show UNCLAMPED t
-                            beamAngle: angleDeg.toFixed(3) // Should be ~0.000
+                            beamAngle: angleDeg.toFixed(3),
+                            beamErr: beamBaseErr.toFixed(3),
+                            beamRegion: regionString,
+                            hitStatus: isHitting ? "HIT" : "MISS",
+                            normY: isHitting ? normY.toFixed(3) : "NA"
                         };
                         setDebugReadout(newReadout);
                     }
-                } else {
-                    if (isoMarker) isoMarker.visible = false;
-                    rayLine.visible = false;
-                    closestPtMarker.visible = false;
-                    connLine.visible = false;
-                }
-            }
+
+
+                } // End 10Hz
+
+            } // End srcAnchorRef check
 
             renderer.render(scene, camera);
         };
@@ -749,6 +954,11 @@ const App = () => {
                     fontSize: '10px', pointerEvents: 'none', zIndex: 999
                 }}>
                     <div><strong>DEBUG INFO</strong></div>
+                    <div style={{ color: '#0ff', fontWeight: 'bold' }}>BeamRegion: {debugReadout.beamRegion}</div>
+                    <div style={{ fontSize: '9px', color: '#aaa', marginBottom: '4px' }}>
+                        Hit: {debugReadout.hitStatus} | NormY: {debugReadout.normY}
+                    </div>
+                    <hr style={{ borderColor: '#444', margin: '5px 0' }} />
                     <div>SRC: [{debugReadout.src.join(', ')}]</div>
                     <div>DET: [{debugReadout.det.join(', ')}]</div>
                     <div>SID: {debugReadout.sid} m</div>
@@ -758,6 +968,7 @@ const App = () => {
                     <div>IsoSeg: {debugReadout.isoSeg} m</div>
                     <div>t: {debugReadout.t}</div>
                     <div>BeamAng: {debugReadout.beamAngle}°</div>
+                    <div>BeamBaseErr: {debugReadout.beamErr} m</div>
                     <hr style={{ borderColor: '#444', margin: '5px 0' }} />
                     <div>Lift: {controls.lift.toFixed(3)}</div>
                     <div>C-Rot: {(controls.column_rot * 180 / Math.PI).toFixed(1)}°</div>
@@ -771,6 +982,13 @@ const App = () => {
             <div style={xrayStyle}>
                 <div style={{ backgroundColor: '#111', borderBottom: '1px solid #333', padding: '5px 10px', fontSize: '9px', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between', color: '#aaa' }}>
                     <span>FLUORO - LIVE VIEW</span>
+                    <span style={{
+                        color: beamRegionUI.includes("MISS") ? '#ff3333' : '#00ffaa',
+                        fontWeight: 'bold',
+                        marginLeft: '10px'
+                    }}>
+                        {beamRegionUI}
+                    </span>
                     <span>ISO: 1200</span>
                 </div>
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
@@ -814,14 +1032,32 @@ const App = () => {
                                 max={spec.max}
                                 step={spec.step}
                                 value={val}
-                                onChange={e => setControls({ ...controls, [key]: parseFloat(e.target.value) })}
-                                style={{ width: '100%', cursor: 'pointer' }} />
+                                disabled={beamActive}
+                                onChange={e => !beamActive && setControls({ ...controls, [key]: parseFloat(e.target.value) })}
+                                style={{ width: '100%', cursor: beamActive ? 'not-allowed' : 'pointer', opacity: beamActive ? 0.5 : 1 }} />
                         </div>
                     );
                 })}
                 <div style={{ marginTop: '20px', borderTop: '1px solid #eee', paddingTop: '15px' }}>
                     <button onClick={handleTakeXray} disabled={beamActive} style={{ width: '100%', padding: '12px', backgroundColor: beamActive ? '#ff0000' : '#333', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: beamActive ? 'not-allowed' : 'pointer', transition: 'background 0.2s' }}>
                         {beamActive ? 'EXPOSING...' : 'TAKE X-RAY'}
+                    </button>
+                    <button
+                        onClick={handleDownloadXray}
+                        disabled={!lastXray || beamActive}
+                        style={{
+                            width: '100%',
+                            marginTop: '10px',
+                            padding: '10px',
+                            backgroundColor: (!lastXray || beamActive) ? '#ddd' : '#444',
+                            color: (!lastXray || beamActive) ? '#999' : 'white',
+                            border: 'none',
+                            borderRadius: '8px',
+                            fontWeight: 'bold',
+                            cursor: (!lastXray || beamActive) ? 'not-allowed' : 'pointer',
+                            transition: 'all 0.2s'
+                        }}>
+                        DOWNLOAD X-RAY
                     </button>
                 </div>
             </div>
