@@ -100,99 +100,175 @@ const ANATOMY_AXES = { up: 'y', leftRight: 'x', frontBack: 'z' };
 
 // --- ROBUST ZONE CLASSIFIER HELPERS ---
 
+// --- ROBUST ZONE CLASSIFIER HELPERS (SKELETON-BASED) ---
+
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
-const lerp = (a, b, t) => a + (b - a) * t;
 
-// Torso corridor radius as a function of height (normY: 0=feet, 1=head)
-// Tuned for "generic supine-ish patient" with explicit piecewise values
-const torsoRadiusAtY = (normY) => {
-    if (normY >= 0.80) return 0.28; // Shoulders / Upper Chest
-    if (normY >= 0.65) return 0.24; // Thorax
-    if (normY >= 0.50) return 0.20; // Upper Abdomen / Waist
-    if (normY >= 0.38) return 0.24; // Pelvis / Hips
-    return 0.18;                    // Lower limb trunk transition / Legs
+// 1. SKELETON DEFINITION (Canonical UVW: U=Height, V=Width, W=Depth)
+// Coordinate Format: new THREE.Vector3(V, U, W) -> (Lat, Long, Depth) matching standard T-pose 0..1 bounding box
+const SKELETON_NODES_UVW = {
+    // U=Height (0=Feet, 1=Head), V=Width (0.5=Center), W=Depth (0.5=Center)
+    "0_lowerSpine": new THREE.Vector3(0.50, 0.44, 0.50),
+    "1_rightHip": new THREE.Vector3(0.55, 0.42, 0.50),
+    "2_rightKnee": new THREE.Vector3(0.54, 0.22, 0.50),
+    "3_rightFoot": new THREE.Vector3(0.53, 0.05, 0.50),
+    "4_leftHip": new THREE.Vector3(0.45, 0.42, 0.50),
+    "5_leftKnee": new THREE.Vector3(0.46, 0.22, 0.50),
+    "6_leftFoot": new THREE.Vector3(0.47, 0.05, 0.50),
+    "7_midSpine": new THREE.Vector3(0.50, 0.62, 0.50),
+    "8_upperSpine": new THREE.Vector3(0.50, 0.76, 0.50),
+    "9_neck": new THREE.Vector3(0.50, 0.86, 0.50),
+    "10_head": new THREE.Vector3(0.50, 0.95, 0.50),
+    "11_leftShoulder": new THREE.Vector3(0.36, 0.76, 0.50),
+    "12_leftElbow": new THREE.Vector3(0.32, 0.60, 0.50),
+    "13_leftHand": new THREE.Vector3(0.30, 0.46, 0.50),
+    "14_rightShoulder": new THREE.Vector3(0.64, 0.76, 0.50),
+    "15_rightElbow": new THREE.Vector3(0.68, 0.60, 0.50),
+    "16_rightHand": new THREE.Vector3(0.70, 0.46, 0.50)
 };
 
-// Robust Point Classifier (Patient Local Space)
-const computeZoneFromLocalPointSmart = (local, bounds) => {
-    const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
-    // Safety for zero-size
-    const spanX = Math.max(1e-6, maxX - minX);
-    const spanY = Math.max(1e-6, maxY - minY);
-    const spanZ = Math.max(1e-6, maxZ - minZ);
-
-    const normX = clamp01((local.x - minX) / spanX);
-    const normY = clamp01((local.y - minY) / spanY);
-    const normZ = clamp01((local.z - minZ) / spanZ);
-
-    // Centered coords (assuming X/Z are lateral axes)
-    const cx = normX - 0.5;
-    const cz = normZ - 0.5;
-
-    // Lateral from centerline
-    const lateral = Math.sqrt(cx * cx + cz * cz);
-
-    // Torso corridor check
-    const torsoR = torsoRadiusAtY(normY);
-    const inTorso = lateral <= torsoR;
-
-    // --- 1) AXIAL (Torso) ---
-    if (inTorso) {
-        if (normY > 0.86) return ZONE_DEFS.head;
-        if (normY >= 0.70) return ZONE_DEFS.thorax;
-        if (normY >= 0.56) return ZONE_DEFS.abdomen;
-        if (normY >= 0.42) return ZONE_DEFS.pelvis;
-
-        // Below 0.42 but still "inTorso" (central):
-        // Transition to lower limbs or stick to pelvis if high enough
-        if (normY >= 0.38) return ZONE_DEFS.pelvis;
-
-        // Default fall-through to lower limb logic below if very low in torso
+const SKELETON_EDGES = [
+    { name: "spine_lower", a: "0_lowerSpine", b: "7_midSpine", zone: "abdomen" },
+    { name: "spine_mid", a: "7_midSpine", b: "8_upperSpine", zone: "thorax" },
+    { name: "spine_upper", a: "8_upperSpine", b: "9_neck", zone: "thorax" },
+    { name: "neck_head", a: "9_neck", b: "10_head", zone: "head" },
+    { name: "hip_right", a: "0_lowerSpine", b: "1_rightHip", zone: "pelvis" },
+    { name: "hip_left", a: "0_lowerSpine", b: "4_leftHip", zone: "pelvis" },
+    { name: "femur_right", a: "1_rightHip", b: "2_rightKnee", zone: "femur" },
+    { name: "femur_left", a: "4_leftHip", b: "5_leftKnee", zone: "femur" },
+    {
+        name: "lowerleg_right", a: "2_rightKnee", b: "3_rightFoot",
+        zone_by_t: { 0.15: "knee", 0.85: "tibia", 1.0: "foot" }
+    },
+    {
+        name: "lowerleg_left", a: "5_leftKnee", b: "6_leftFoot",
+        zone_by_t: { 0.15: "knee", 0.85: "tibia", 1.0: "foot" }
+    },
+    { name: "shoulder_left", a: "8_upperSpine", b: "11_leftShoulder", zone: "shoulder" },
+    { name: "shoulder_right", a: "8_upperSpine", b: "14_rightShoulder", zone: "shoulder" },
+    { name: "upperarm_left", a: "11_leftShoulder", b: "12_leftElbow", zone: "humerus" },
+    { name: "upperarm_right", a: "14_rightShoulder", b: "15_rightElbow", zone: "humerus" },
+    {
+        name: "forearm_left", a: "12_leftElbow", b: "13_leftHand",
+        zone_by_t: { 0.75: "forearm", 1.0: "hand" }
+    },
+    {
+        name: "forearm_right", a: "15_rightElbow", b: "16_rightHand",
+        zone_by_t: { 0.75: "forearm", 1.0: "hand" }
     }
+];
 
-    // --- 2) LIMBS (Appendicular) ---
-    // Decision: Upper vs Lower limb based on height relative to pelvis
-    // Anti-weird-pose: Force lower limb if below 0.30 regardless of "arm" appearance
-    const isUpperLimbHeight = normY >= 0.45;
+const JOINT_SNAP_RULES = [
+    { node: "2_rightKnee", zoneKey: "knee" },
+    { node: "5_leftKnee", zoneKey: "knee" },
+    { node: "10_head", zoneKey: "head" },
+    { node: "13_leftHand", zoneKey: "hand" },
+    { node: "16_rightHand", zoneKey: "hand" }
+];
+const SNAP_RADIUS_SQ = 0.055 * 0.055;
 
-    if (isUpperLimbHeight && normY >= 0.30) {
-        // --- UPPER LIMB ---
-        if (normY > 0.72) return ZONE_DEFS.shoulder;
-        if (normY >= 0.58) return ZONE_DEFS.humerus;
-        if (normY >= 0.42) return ZONE_DEFS.forearm;
-
-        // Hand is below 0.42 but mapped as upper limb
-        return ZONE_DEFS.hand;
-    } else {
-        // --- LOWER LIMB ---
-        if (normY >= 0.26) return ZONE_DEFS.femur;
-        if (normY >= 0.22) return ZONE_DEFS.knee;
-        if (normY >= 0.10) return ZONE_DEFS.tibia;
-        if (normY >= 0.06) return ZONE_DEFS.ankle;
-        return ZONE_DEFS.foot;
-    }
+// 2. MATH HELPERS
+const getBodyAxes = (bounds) => {
+    const s = {
+        x: bounds.maxX - bounds.minX,
+        y: bounds.maxY - bounds.minY,
+        z: bounds.maxZ - bounds.minZ
+    };
+    // Largest span = U (Long)
+    // 2nd Largest = V (Lat)
+    // Smallest = W (Depth)
+    const axes = Object.keys(s).sort((a, b) => s[b] - s[a]);
+    return { u: axes[0], v: axes[1], w: axes[2] };
 };
 
-// Majority vote with a small bias toward torso zones to avoid "arm steals chest".
-const pickZoneFromVotes = (counts) => {
-    let bestKey = 'miss';
-    let bestScore = -1;
+const localToUVW = (local, bounds, axes) => {
+    const getNorm = (axis) => {
+        const minVal = bounds['min' + axis.toUpperCase()];
+        const maxVal = bounds['max' + axis.toUpperCase()];
+        if (Math.abs(maxVal - minVal) < 1e-6) return 0.5;
+        return (local[axis] - minVal) / (maxVal - minVal);
+    };
 
-    for (const [key, n] of Object.entries(counts)) {
-        let score = n;
+    // Map to Canonical Vector3(V, U, W) = (Width, Height, Depth)
+    return new THREE.Vector3(
+        getNorm(axes.v), // X = V (Width)
+        getNorm(axes.u), // Y = U (Height)
+        getNorm(axes.w)  // Z = W (Depth)
+    );
+};
 
-        // torso bias to stabilize axial views
-        if (key === 'thorax' || key === 'abdomen' || key === 'pelvis' || key === 'head') {
-            score += 0.35;
-        }
+const dist2PointToSegmentUVW = (P, A, B) => {
+    const pax = P.x - A.x, pay = P.y - A.y, paz = P.z - A.z;
+    const bax = B.x - A.x, bay = B.y - A.y, baz = B.z - A.z;
+    const lenSq = bax * bax + bay * bay + baz * baz;
+    const h = Math.max(0, Math.min(1, (pax * bax + pay * bay + paz * baz) / (lenSq + 1e-8)));
+    const dx = pax - bax * h;
+    const dy = pay - bay * h;
+    const dz = paz - baz * h;
+    return { d2: dx * dx + dy * dy + dz * dz, t: h };
+};
 
-        if (score > bestScore) {
-            bestScore = score;
-            bestKey = key;
+const dist2PointToNode = (P, N) => {
+    const dx = P.x - N.x, dy = P.y - N.y, dz = P.z - N.z;
+    return dx * dx + dy * dy + dz * dz;
+};
+
+// 3. MAIN CLASSIFIER
+const classifyUVWPointBySkeleton = (pUVW) => {
+    let bestDistSq = Infinity;
+    let bestZone = ZONE_DEFS.miss;
+    let bestEdgeName = null;
+
+    // Check Joint Snapping First (Optimization)
+    for (const rule of JOINT_SNAP_RULES) {
+        const N = SKELETON_NODES_UVW[rule.node];
+        const d2 = dist2PointToNode(pUVW, N);
+        if (d2 < SNAP_RADIUS_SQ) {
+            // If inside snap radius, we can just take it, but we need to compare against others?
+            // "if a sample is closest to a knee node... output knee"
+            // We treat this as a high-priority "edge" of length 0.
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                bestZone = ZONE_DEFS[rule.zoneKey];
+                bestEdgeName = `SNAP:${rule.node}`;
+            }
         }
     }
 
-    return ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
+    // If snapped, we might still check edges to see if we are CLOSER to an edge center than the node?
+    // But usually snapping is dominant.
+    // Let's iterate edges too, to be safe.
+
+    // Check edges
+    for (const edge of SKELETON_EDGES) {
+        const A = SKELETON_NODES_UVW[edge.a];
+        const B = SKELETON_NODES_UVW[edge.b];
+        const { d2, t } = dist2PointToSegmentUVW(pUVW, A, B);
+
+        if (d2 < bestDistSq) {
+            bestDistSq = d2;
+            bestEdgeName = edge.name;
+
+            // Resolve Zone
+            if (edge.zone) {
+                bestZone = ZONE_DEFS[edge.zone];
+            } else if (edge.zone_by_t) {
+                bestZone = ZONE_DEFS.miss; // fallback
+                const thresholds = Object.keys(edge.zone_by_t).sort((a, b) => parseFloat(a) - parseFloat(b));
+                for (const th of thresholds) {
+                    if (t < parseFloat(th)) {
+                        bestZone = ZONE_DEFS[edge.zone_by_t[th]];
+                        break;
+                    }
+                }
+                if (bestZone === ZONE_DEFS.miss && edge.zone_by_t['1.0']) {
+                    bestZone = ZONE_DEFS[edge.zone_by_t['1.0']];
+                }
+            }
+        }
+    }
+
+    return { zone: bestZone, d2: bestDistSq, bestEdgeName };
 };
 
 // Legacy fallback for cart_x logic (mapped to new keys)
@@ -251,6 +327,7 @@ const App = () => {
     // const cArmModelRef = useRef(null); // Unused
     const srcAnchorRef = useRef(new THREE.Group());
     const detAnchorRef = useRef(new THREE.Group());
+    const skeletonDebugRef = useRef(null); // Skeleton Debug Group
 
     // --- DYNAMIC ANATOMY GENERATOR ---
     const generateRealisticXray = (currentControls = controls, zoneKeyOverride = null) => {
@@ -623,6 +700,30 @@ const App = () => {
         const connLine = new THREE.Line(connGeo, new THREE.LineBasicMaterial({ color: 0x00ff00 }));
         connLine.visible = false;
         scene.add(connLine);
+
+        // 4. SKELETON DEBUG (New)
+        const skelGroup = new THREE.Group();
+        skelGroup.visible = false;
+        scene.add(skelGroup);
+        skeletonDebugRef.current = skelGroup;
+
+        // Create meshes for nodes
+        Object.keys(SKELETON_NODES_UVW).forEach(key => {
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), new THREE.MeshBasicMaterial({ color: 0x00ffff, depthTest: false }));
+            mesh.renderOrder = 999;
+            mesh.name = key;
+            skelGroup.add(mesh);
+        });
+
+        // Create lines for edges
+        SKELETON_EDGES.forEach(edge => {
+            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+            const mat = new THREE.LineBasicMaterial({ color: 0x00aaaa, transparent: true, opacity: 0.5, depthTest: false });
+            const line = new THREE.Line(geo, mat);
+            line.renderOrder = 998;
+            line.name = edge.name;
+            skelGroup.add(line);
+        });
 
         // --- MATERIALS ---
         const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
@@ -1024,43 +1125,52 @@ const App = () => {
                                 const tEnd = Math.min(1, tExit);
 
                                 if (tEnd > tStart) {
-                                    // --- MULTI-POINT SAMPLING & VOTING ---
+                                    // --- MULTI-POINT SAMPLING & VOTING (SKELETON) ---
                                     const SAMPLES = 9;
                                     const counts = Object.create(null);
-                                    let midNormY = 0;
+                                    let bestSampleEdge = "";
+                                    let bestSampleD2 = Infinity;
+
+                                    const bodyAxes = getBodyAxes(bounds);
 
                                     for (let i = 0; i < SAMPLES; i++) {
-                                        // Midpoint sampling per bin
-                                        const u = (i + 0.5) / SAMPLES;
-                                        const t = tStart + u * (tEnd - tStart);
-
-                                        // sampleLocal = localV1 + localDir * (t * localSid)
+                                        // Inclusive sampling
+                                        const t = (SAMPLES > 1) ? (tStart + (tEnd - tStart) * (i / (SAMPLES - 1))) : (tStart + tEnd) * 0.5;
                                         sampleLocal.copy(localDir).multiplyScalar(t * localSid).add(localV1);
 
-                                        // Validate sample is actually in box (precision issues)
-                                        // Not strictly needed if tStart/tEnd are correct, but good safety.
+                                        // Convert to UVW
+                                        const pUVW = localToUVW(sampleLocal, bounds, bodyAxes);
 
                                         // Classify
-                                        const z = computeZoneFromLocalPointSmart(sampleLocal, bounds);
+                                        const res = classifyUVWPointBySkeleton(pUVW);
 
-                                        // Weighted Voting
-                                        // Prefer axial keys slightly to avoid "arm flicker" in torso shots
-                                        const axialKeys = ['head', 'thorax', 'abdomen', 'pelvis'];
-                                        const weight = axialKeys.includes(z.key) ? 1.2 : 1.0;
+                                        // Voting Weight = 1 / (d2 + 1e-4)
+                                        const weight = 1.0 / (res.d2 + 1e-4);
+                                        counts[res.zone.key] = (counts[res.zone.key] || 0) + weight;
 
-                                        counts[z.key] = (counts[z.key] || 0) + weight;
-
-                                        // Capture middle sample for debug
-                                        if (i === Math.floor(SAMPLES / 2)) {
-                                            // Re-normalize to get normY for debug display
-                                            const spanY = bounds.maxY - bounds.minY;
-                                            midNormY = (sampleLocal.y - bounds.minY) / spanY;
+                                        // Debug info (track closest sample)
+                                        if (res.d2 < bestSampleD2) {
+                                            bestSampleD2 = res.d2;
+                                            bestSampleEdge = res.bestEdgeName;
+                                            // Optional: Use normY for debug display if expected a number, but we store string
+                                            // beamNormYRef expects ? 
+                                            // existing code used it for number. We can store string.
                                         }
                                     }
 
-                                    // Pick Winner
-                                    zoneResult = pickZoneFromVotes(counts);
-                                    normY = midNormY;
+                                    // Pick Winner (Max Weight)
+                                    let bestKey = 'miss';
+                                    let bestWeight = -1;
+                                    for (const key in counts) {
+                                        if (counts[key] > bestWeight) {
+                                            bestWeight = counts[key];
+                                            bestKey = key;
+                                        }
+                                    }
+                                    zoneResult = ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
+
+                                    // Debug Text Update
+                                    beamNormYRef.current = `${bestSampleEdge} d:${Math.sqrt(bestSampleD2).toFixed(3)}`;
                                 }
                             }
                         }
@@ -1068,13 +1178,61 @@ const App = () => {
 
                     // Update Refs & UI (Throttled)
                     beamZoneKeyRef.current = zoneResult.key;
-                    beamRegionRef.current = zoneResult.label; // Keep label for existing consumers if any
+                    beamRegionRef.current = zoneResult.label;
                     beamHitRef.current = isHitting;
-                    // Store normalized Y (Up) for debugging / tuning
-                    beamNormYRef.current = isHitting ? normY : null;
+                    if (!isHitting) beamNormYRef.current = null;
 
                     setBeamRegionUI(zoneResult.label);
                     setBeamZoneKeyUI(zoneResult.key);
+
+                    // --- UPDATE SKELETON DEBUG VISUALS ---
+                    if (skeletonDebugRef.current) {
+                        skeletonDebugRef.current.visible = debugEnabledRef.current;
+
+                        if (debugEnabledRef.current && patientModelRef.current && bounds.ready) {
+                            const bodyAxes = getBodyAxes(bounds);
+
+                            // Transform Helper: Canonical UVW -> World
+                            // Reuses localV1 and localV2 as scratch since they are recomputed next tick
+                            const uvwToWorld = (uvw, target) => {
+                                const local = target;
+                                // Map UVW (X=Lat, Y=Long, Z=Depth) to Local
+                                // local[axis] = uvw[normAxis] * span + min
+                                const setAxis = (axis, val) => {
+                                    local[axis] = val * (bounds['max' + axis.toUpperCase()] - bounds['min' + axis.toUpperCase()]) + bounds['min' + axis.toUpperCase()];
+                                };
+                                setAxis(bodyAxes.v, uvw.x); // V = Width
+                                setAxis(bodyAxes.u, uvw.y); // U = Height
+                                setAxis(bodyAxes.w, uvw.z); // W = Depth
+
+                                local.applyMatrix4(patientModelRef.current.matrixWorld);
+                                return local;
+                            };
+
+                            // Update Nodes
+                            skeletonDebugRef.current.children.forEach(child => {
+                                if (SKELETON_NODES_UVW[child.name]) {
+                                    const uvw = SKELETON_NODES_UVW[child.name];
+                                    uvwToWorld(uvw, child.position);
+                                } else if (child.type === 'Line') {
+                                    // Update Edges
+                                    const edge = SKELETON_EDGES.find(e => e.name === child.name);
+                                    if (edge) {
+                                        const pos = child.geometry.attributes.position.array;
+                                        const start = localV1;
+                                        const end = localV2;
+
+                                        uvwToWorld(SKELETON_NODES_UVW[edge.a], start);
+                                        uvwToWorld(SKELETON_NODES_UVW[edge.b], end);
+
+                                        start.toArray(pos, 0);
+                                        end.toArray(pos, 3);
+                                        child.geometry.attributes.position.needsUpdate = true;
+                                    }
+                                }
+                            });
+                        }
+                    } // end debug update
 
 
                     // --- 2. DEBUG READOUT (Optional) ---
@@ -1120,7 +1278,7 @@ const App = () => {
                             beamErr: beamBaseErr.toFixed(3),
                             beamRegion: zoneResult.label,
                             hitStatus: isHitting ? "HIT" : "MISS",
-                            normY: isHitting ? normY.toFixed(3) : "NA"
+                            normY: beamNormYRef.current || "NA"
                         };
                         setDebugReadout(newReadout);
                     }
