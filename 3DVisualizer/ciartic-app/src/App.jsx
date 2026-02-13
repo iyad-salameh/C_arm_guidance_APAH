@@ -5,15 +5,14 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { projectPointToLineParamsInto } from './utils/imagingGeometry.js';
 
+const R2D = 180 / Math.PI;
+const D2R = Math.PI / 180;
+
 // --- CONFIGURATION ---
 const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb?v=3';
 const CARM_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/c-armModel.glb?v=1';
 const realsense_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/realsense.glb?v=1';
 const ISO_WORLD = new THREE.Vector3(0, 1.45, 0);
-
-// --- MATH UTILS & DEVICE PROFILE ---
-const D2R = Math.PI / 180;
-const R2D = 180 / Math.PI;
 
 const DEVICE_PROFILE = {
     limits: {
@@ -104,100 +103,158 @@ const ANATOMY_AXES = { up: 'y', leftRight: 'x', frontBack: 'z' };
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
-// 1. SKELETON DEFINITION (Canonical UVW: U=Height, V=Width, W=Depth)
-// Coordinate Format: new THREE.Vector3(V, U, W) -> (Lat, Long, Depth) matching standard T-pose 0..1 bounding box
-const SKELETON_NODES_UVW = {
-    // U=Height (0=Feet, 1=Head), V=Width (0.5=Center), W=Depth (0.5=Center)
-    "0_lowerSpine": new THREE.Vector3(0.50, 0.44, 0.50),
-    "1_rightHip": new THREE.Vector3(0.55, 0.42, 0.50),
-    "2_rightKnee": new THREE.Vector3(0.54, 0.22, 0.50),
-    "3_rightFoot": new THREE.Vector3(0.53, 0.05, 0.50),
-    "4_leftHip": new THREE.Vector3(0.45, 0.42, 0.50),
-    "5_leftKnee": new THREE.Vector3(0.46, 0.22, 0.50),
-    "6_leftFoot": new THREE.Vector3(0.47, 0.05, 0.50),
-    "7_midSpine": new THREE.Vector3(0.50, 0.62, 0.50),
-    "8_upperSpine": new THREE.Vector3(0.50, 0.76, 0.50),
-    "9_neck": new THREE.Vector3(0.50, 0.86, 0.50),
-    "10_head": new THREE.Vector3(0.50, 0.95, 0.50),
-    "11_leftShoulder": new THREE.Vector3(0.36, 0.76, 0.50),
-    "12_leftElbow": new THREE.Vector3(0.32, 0.60, 0.50),
-    "13_leftHand": new THREE.Vector3(0.30, 0.46, 0.50),
-    "14_rightShoulder": new THREE.Vector3(0.64, 0.76, 0.50),
-    "15_rightElbow": new THREE.Vector3(0.68, 0.60, 0.50),
-    "16_rightHand": new THREE.Vector3(0.70, 0.46, 0.50)
-};
+// 1. AXIS INFERENCE & SKELETON DEFINITION
+// ------------------------------------------------------------------
 
-const SKELETON_EDGES = [
-    { name: "spine_lower", a: "0_lowerSpine", b: "7_midSpine", zone: "abdomen" },
-    { name: "spine_mid", a: "7_midSpine", b: "8_upperSpine", zone: "thorax" },
-    { name: "spine_upper", a: "8_upperSpine", b: "9_neck", zone: "thorax" },
-    { name: "neck_head", a: "9_neck", b: "10_head", zone: "head" },
-    { name: "hip_right", a: "0_lowerSpine", b: "1_rightHip", zone: "pelvis" },
-    { name: "hip_left", a: "0_lowerSpine", b: "4_leftHip", zone: "pelvis" },
-    { name: "femur_right", a: "1_rightHip", b: "2_rightKnee", zone: "femur" },
-    { name: "femur_left", a: "4_leftHip", b: "5_leftKnee", zone: "femur" },
-    {
-        name: "lowerleg_right", a: "2_rightKnee", b: "3_rightFoot",
-        zone_by_t: { 0.15: "knee", 0.85: "tibia", 1.0: "foot" }
-    },
-    {
-        name: "lowerleg_left", a: "5_leftKnee", b: "6_leftFoot",
-        zone_by_t: { 0.15: "knee", 0.85: "tibia", 1.0: "foot" }
-    },
-    { name: "shoulder_left", a: "8_upperSpine", b: "11_leftShoulder", zone: "shoulder" },
-    { name: "shoulder_right", a: "8_upperSpine", b: "14_rightShoulder", zone: "shoulder" },
-    { name: "upperarm_left", a: "11_leftShoulder", b: "12_leftElbow", zone: "humerus" },
-    { name: "upperarm_right", a: "14_rightShoulder", b: "15_rightElbow", zone: "humerus" },
-    {
-        name: "forearm_left", a: "12_leftElbow", b: "13_leftHand",
-        zone_by_t: { 0.75: "forearm", 1.0: "hand" }
-    },
-    {
-        name: "forearm_right", a: "15_rightElbow", b: "16_rightHand",
-        zone_by_t: { 0.75: "forearm", 1.0: "hand" }
-    }
-];
-
-const JOINT_SNAP_RULES = [
-    { node: "2_rightKnee", zoneKey: "knee" },
-    { node: "5_leftKnee", zoneKey: "knee" },
-    { node: "10_head", zoneKey: "head" },
-    { node: "13_leftHand", zoneKey: "hand" },
-    { node: "16_rightHand", zoneKey: "hand" }
-];
-const SNAP_RADIUS_SQ = 0.055 * 0.055;
-
-// 2. MATH HELPERS
-const getBodyAxes = (bounds) => {
+// Detect Long/Width/Thick axes from bounds dimensions
+const getInferredPatientAxes = (bounds) => {
     const s = {
         x: bounds.maxX - bounds.minX,
         y: bounds.maxY - bounds.minY,
         z: bounds.maxZ - bounds.minZ
     };
-    // Largest span = U (Long)
-    // 2nd Largest = V (Lat)
-    // Smallest = W (Depth)
+    // Sort keys by size: Descending
     const axes = Object.keys(s).sort((a, b) => s[b] - s[a]);
-    return { u: axes[0], v: axes[1], w: axes[2] };
-};
 
-const localToUVW = (local, bounds, axes) => {
-    const getNorm = (axis) => {
-        const minVal = bounds['min' + axis.toUpperCase()];
-        const maxVal = bounds['max' + axis.toUpperCase()];
-        if (Math.abs(maxVal - minVal) < 1e-6) return 0.5;
-        return (local[axis] - minVal) / (maxVal - minVal);
+    return {
+        long: axes[0],   // Largest (Head-Feet)
+        width: axes[1],  // Medium (Left-Right)
+        thick: axes[2]   // Smallest (Front-Back)
     };
-
-    // Map to Canonical Vector3(V, U, W) = (Width, Height, Depth)
-    return new THREE.Vector3(
-        getNorm(axes.v), // X = V (Width)
-        getNorm(axes.u), // Y = U (Height)
-        getNorm(axes.w)  // Z = W (Depth)
-    );
 };
 
-const dist2PointToSegmentUVW = (P, A, B) => {
+// 1.1 LANDMARK DEFINITION (Normalized 0..1 in Patient Box)
+// Coord Order: (uLong, uWidth, uThick)
+// uLong: 0=Feet, 1=Head
+// uWidth: 0.5=Midline. <0.5 Right?, >0.5 Left? (Depends on patient sign, we infer width axis)
+const LANDMARKS_NORM = {
+    // Spine
+    "lowerSpine": new THREE.Vector3(0.44, 0.50, 0.50),
+    "midSpine": new THREE.Vector3(0.62, 0.50, 0.50),
+    "upperSpine": new THREE.Vector3(0.76, 0.50, 0.50),
+    "neck": new THREE.Vector3(0.86, 0.50, 0.50),
+    "head": new THREE.Vector3(0.95, 0.50, 0.50),
+
+    // Legs (Right)
+    "rightHip": new THREE.Vector3(0.42, 0.55, 0.50),
+    "rightKnee": new THREE.Vector3(0.22, 0.55, 0.50),
+    "rightFoot": new THREE.Vector3(0.05, 0.55, 0.50),
+
+    // Legs (Left)
+    "leftHip": new THREE.Vector3(0.42, 0.45, 0.50),
+    "leftKnee": new THREE.Vector3(0.22, 0.45, 0.50),
+    "leftFoot": new THREE.Vector3(0.05, 0.45, 0.50),
+
+    // Arms (Right)
+    "rightShoulder": new THREE.Vector3(0.76, 0.65, 0.50),
+    "rightElbow": new THREE.Vector3(0.60, 0.70, 0.50),
+    "rightHand": new THREE.Vector3(0.46, 0.72, 0.50),
+
+    // Arms (Left)
+    "leftShoulder": new THREE.Vector3(0.76, 0.35, 0.50),
+    "leftElbow": new THREE.Vector3(0.60, 0.30, 0.50),
+    "leftHand": new THREE.Vector3(0.46, 0.28, 0.50)
+};
+
+// 1.2 EDGES (Bone Segments)
+const EDGES = [
+    ["head", "neck"],
+    ["neck", "upperSpine"],
+    ["upperSpine", "midSpine"],
+    ["midSpine", "lowerSpine"],
+    ["lowerSpine", "leftHip"],
+    ["leftHip", "leftKnee"],
+    ["leftKnee", "leftFoot"],
+    ["lowerSpine", "rightHip"],
+    ["rightHip", "rightKnee"],
+    ["rightKnee", "rightFoot"],
+    ["upperSpine", "leftShoulder"],
+    ["leftShoulder", "leftElbow"],
+    ["leftElbow", "leftHand"],
+    ["upperSpine", "rightShoulder"],
+    ["rightShoulder", "rightElbow"],
+    ["rightElbow", "rightHand"]
+];
+
+// 1.3 CORRECTION OFFSETS (Meters)
+// Applied laterally (along Width axis) OUTWARD from midline
+const OFFSETS_LOCAL_M = {
+    "rightHand": 0.20, "leftHand": 0.20,
+    "rightKnee": 0.12, "leftKnee": 0.12,
+    "rightFoot": 0.12, "leftFoot": 0.12,
+    "leftElbow": 0.05, "rightElbow": 0.05 // Minor adjustment for elbows
+};
+
+// 2. HELPERS
+// ------------------------------------------------------------------
+
+// Helper: Compute Local Position for a Landmark (with Corrections)
+const landmarkLocal = (name, bounds, axes) => {
+    const norm = LANDMARKS_NORM[name];
+    if (!norm) return new THREE.Vector3();
+
+    // 1. Basic Norm -> Local
+    const local = new THREE.Vector3();
+    const setVal = (axis, uVal) => {
+        const min = bounds['min' + axis.toUpperCase()];
+        const max = bounds['max' + axis.toUpperCase()];
+        local[axis] = min + uVal * (max - min);
+    };
+    setVal(axes.long, norm.x);
+    setVal(axes.width, norm.y);
+    setVal(axes.thick, norm.z);
+
+    // 2. Apply Lateral Correction
+    const offset = OFFSETS_LOCAL_M[name];
+    if (offset) {
+        const midMin = bounds['min' + axes.width.toUpperCase()];
+        const midMax = bounds['max' + axes.width.toUpperCase()];
+        const midVal = (midMin + midMax) / 2;
+
+        // Determine Outward Direction
+        // If current > mid, add offset. If current < mid, subtract offset.
+        // This pushes "out" from center.
+        const currentW = local[axes.width];
+        const dir = (currentW >= midVal) ? 1.0 : -1.0;
+
+        local[axes.width] += offset * dir;
+    }
+
+    return local;
+};
+
+// Helper: Map Edge to ZoneKey
+const getZoneKeyForEdge = (startNode, endNode, t) => {
+    const key = `${startNode}-${endNode}`;
+
+    // Spine / Torso
+    if (key.includes("head") || key.includes("neck")) return ZONE_DEFS.head;
+    if (key.includes("upperSpine")) return ZONE_DEFS.thorax;
+    if (key.includes("midSpine")) return ZONE_DEFS.abdomen;
+    if (key.includes("lowerSpine") && (key.includes("Hip") || key.includes("mid"))) return ZONE_DEFS.pelvis;
+
+    // Legs
+    if (key.includes("Hip") && key.includes("Knee")) return ZONE_DEFS.femur;
+    if (key.includes("Knee") && key.includes("Foot")) {
+        // T-based split
+        if (t < 0.2) return ZONE_DEFS.knee;
+        if (t > 0.85) return ZONE_DEFS.foot;
+        return ZONE_DEFS.tibia;
+    }
+
+    // Arms
+    if (key.includes("Shoulder") && key.includes("Elbow")) return ZONE_DEFS.humerus;
+    if (key.includes("Elbow") && key.includes("Hand")) {
+        if (t > 0.7) return ZONE_DEFS.hand;
+        return ZONE_DEFS.forearm;
+    }
+    if (key.includes("upperSpine") && key.includes("Shoulder")) return ZONE_DEFS.shoulder;
+
+    return ZONE_DEFS.miss;
+};
+
+// Math: Point to Segment Distance
+const distancePointToSegment = (P, A, B) => {
     const pax = P.x - A.x, pay = P.y - A.y, paz = P.z - A.z;
     const bax = B.x - A.x, bay = B.y - A.y, baz = B.z - A.z;
     const lenSq = bax * bax + bay * bay + baz * baz;
@@ -205,70 +262,33 @@ const dist2PointToSegmentUVW = (P, A, B) => {
     const dx = pax - bax * h;
     const dy = pay - bay * h;
     const dz = paz - baz * h;
-    return { d2: dx * dx + dy * dy + dz * dz, t: h };
+    return { d2: dx * dx + dy * dy + dz * dz, t: h, h };
 };
 
-const dist2PointToNode = (P, N) => {
-    const dx = P.x - N.x, dy = P.y - N.y, dz = P.z - N.z;
-    return dx * dx + dy * dy + dz * dz;
-};
-
-// 3. MAIN CLASSIFIER
-const classifyUVWPointBySkeleton = (pUVW) => {
-    let bestDistSq = Infinity;
+// 3. CLASSIFIER
+const classifyLocalPointBySkeleton = (pLocal, localLandmarks) => {
+    let bestD2 = Infinity;
     let bestZone = ZONE_DEFS.miss;
-    let bestEdgeName = null;
+    let bestEdgeName = "";
 
-    // Check Joint Snapping First (Optimization)
-    for (const rule of JOINT_SNAP_RULES) {
-        const N = SKELETON_NODES_UVW[rule.node];
-        const d2 = dist2PointToNode(pUVW, N);
-        if (d2 < SNAP_RADIUS_SQ) {
-            // If inside snap radius, we can just take it, but we need to compare against others?
-            // "if a sample is closest to a knee node... output knee"
-            // We treat this as a high-priority "edge" of length 0.
-            if (d2 < bestDistSq) {
-                bestDistSq = d2;
-                bestZone = ZONE_DEFS[rule.zoneKey];
-                bestEdgeName = `SNAP:${rule.node}`;
-            }
+    // Iterate Edges
+    for (const [startName, endName] of EDGES) {
+        const A = localLandmarks[startName];
+        const B = localLandmarks[endName];
+
+        if (!A || !B) continue;
+
+        const { d2, t } = distancePointToSegment(pLocal, A, B);
+
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            const zone = getZoneKeyForEdge(startName, endName, t);
+            bestZone = zone;
+            bestEdgeName = `${startName}->${endName}`;
         }
     }
 
-    // If snapped, we might still check edges to see if we are CLOSER to an edge center than the node?
-    // But usually snapping is dominant.
-    // Let's iterate edges too, to be safe.
-
-    // Check edges
-    for (const edge of SKELETON_EDGES) {
-        const A = SKELETON_NODES_UVW[edge.a];
-        const B = SKELETON_NODES_UVW[edge.b];
-        const { d2, t } = dist2PointToSegmentUVW(pUVW, A, B);
-
-        if (d2 < bestDistSq) {
-            bestDistSq = d2;
-            bestEdgeName = edge.name;
-
-            // Resolve Zone
-            if (edge.zone) {
-                bestZone = ZONE_DEFS[edge.zone];
-            } else if (edge.zone_by_t) {
-                bestZone = ZONE_DEFS.miss; // fallback
-                const thresholds = Object.keys(edge.zone_by_t).sort((a, b) => parseFloat(a) - parseFloat(b));
-                for (const th of thresholds) {
-                    if (t < parseFloat(th)) {
-                        bestZone = ZONE_DEFS[edge.zone_by_t[th]];
-                        break;
-                    }
-                }
-                if (bestZone === ZONE_DEFS.miss && edge.zone_by_t['1.0']) {
-                    bestZone = ZONE_DEFS[edge.zone_by_t['1.0']];
-                }
-            }
-        }
-    }
-
-    return { zone: bestZone, d2: bestDistSq, bestEdgeName };
+    return { zone: bestZone, d2: bestD2, edge: bestEdgeName };
 };
 
 // Legacy fallback for cart_x logic (mapped to new keys)
@@ -328,6 +348,12 @@ const App = () => {
     const srcAnchorRef = useRef(new THREE.Group());
     const detAnchorRef = useRef(new THREE.Group());
     const skeletonDebugRef = useRef(null); // Skeleton Debug Group
+
+    // Debug Refs
+
+    const showLandmarksRef = useRef(false);
+    const hasRenderedInitialRef = useRef(false);
+
 
     // --- DYNAMIC ANATOMY GENERATOR ---
     const generateRealisticXray = (currentControls = controls, zoneKeyOverride = null) => {
@@ -615,12 +641,18 @@ const App = () => {
 
     useEffect(() => {
         const handleKeyDown = (e) => {
+            // Toggle Debug
             if (e.key.toLowerCase() === 'd') {
                 setDebugEnabled(prev => {
                     const next = !prev;
                     debugEnabledRef.current = next;
                     return next;
                 });
+            }
+            // Toggle Landmarks
+            if (e.key.toLowerCase() === 'l') {
+                showLandmarksRef.current = !showLandmarksRef.current;
+                console.log("Landmarks Toggled:", showLandmarksRef.current);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -701,27 +733,31 @@ const App = () => {
         connLine.visible = false;
         scene.add(connLine);
 
-        // 4. SKELETON DEBUG (New)
+        // --- SKELETON DEBUG GROUP ---
         const skelGroup = new THREE.Group();
-        skelGroup.visible = false;
+        skelGroup.visible = false; // Managed manually
         scene.add(skelGroup);
         skeletonDebugRef.current = skelGroup;
 
-        // Create meshes for nodes
-        Object.keys(SKELETON_NODES_UVW).forEach(key => {
-            const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), new THREE.MeshBasicMaterial({ color: 0x00ffff, depthTest: false }));
-            mesh.renderOrder = 999;
-            mesh.name = key;
-            skelGroup.add(mesh);
+        // Create Spheres for LANDMARKS
+        // Create Spheres for LANDMARKS
+        Object.keys(LANDMARKS_NORM).forEach(key => {
+            const sphere = new THREE.Mesh(
+                new THREE.SphereGeometry(0.015, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0x00ffff, depthTest: false }) // Cyan, X-ray style
+            );
+            sphere.renderOrder = 999;
+            sphere.name = key;
+            skelGroup.add(sphere);
         });
 
         // Create lines for edges
-        SKELETON_EDGES.forEach(edge => {
+        EDGES.forEach(edge => {
             const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
             const mat = new THREE.LineBasicMaterial({ color: 0x00aaaa, transparent: true, opacity: 0.5, depthTest: false });
             const line = new THREE.Line(geo, mat);
             line.renderOrder = 998;
-            line.name = edge.name;
+            line.name = edge.join('-'); // Use a unique name for the edge line
             skelGroup.add(line);
         });
 
@@ -749,6 +785,10 @@ const App = () => {
             leg.castShadow = true;
             bedGroup.add(leg);
         });
+
+        // Force Initial Render to prevent black screen if models fail
+        renderer.render(scene, camera);
+        hasRenderedInitialRef.current = true;
 
         // --- LOAD MODELS (Promise-based) ---
         const loader = new GLTFLoader();
@@ -992,303 +1032,265 @@ const App = () => {
         let reqId;
         const animate = () => {
             reqId = requestAnimationFrame(animate);
-            orbit.update();
 
-            // PHYSICS LOOP
-            if (srcAnchorRef.current && detAnchorRef.current && beamRef.current) {
-                srcAnchorRef.current.getWorldPosition(v1);
-                detAnchorRef.current.getWorldPosition(v2);
-                const distance = v1.distanceTo(v2);
+            try {
+                orbit.update();
 
-                // Beam Logic (World Space Alignment)
-                // v1 = SRC, v2 = DET
-                dir.subVectors(v2, v1);
-                const sid = dir.length();
-                dir.normalize(); // Now dir is unit vector SRC->DET
+                // PHYSICS LOOP
+                if (srcAnchorRef.current && detAnchorRef.current && beamRef.current) {
+                    srcAnchorRef.current.getWorldPosition(v1);
+                    detAnchorRef.current.getWorldPosition(v2);
+                    const distance = v1.distanceTo(v2);
 
-                beamRef.current.visible = beamActiveRef.current;
+                    // Beam Logic (World Space Alignment)
+                    dir.subVectors(v2, v1);
+                    const sid = dir.length();
+                    dir.normalize();
 
-                // Position at SRC
-                beamRef.current.position.copy(v1);
-
-                // Orient Y-axis cone to point along dir
-                beamRef.current.quaternion.setFromUnitVectors(yAxis, dir);
-
-                // Scale Z to match distance (Y is length axis for our cone, X/Z are thickness)
-                // Use const beamRadius ~ 0.2
-                beamRef.current.scale.set(0.2, sid, 0.2);
+                    beamRef.current.visible = beamActiveRef.current;
+                    beamRef.current.position.copy(v1);
+                    beamRef.current.quaternion.setFromUnitVectors(yAxis, dir);
+                    beamRef.current.scale.set(0.2, sid, 0.2);
 
 
-                // --- DEBUG UPDATE ---
-                if (debugEnabledRef.current) {
-                    if (isoMarker) isoMarker.visible = true;
-
-                    // Update Visuals every frame for smoothness
-                    rayLine.visible = true;
-                    closestPtMarker.visible = true;
-                    connLine.visible = true;
-
-                    // Update Ray Line (Red) - Finite Segment SRC->DET
-                    const positions = rayLine.geometry.attributes.position.array;
-                    v1.toArray(positions, 0); // Start
-                    v2.toArray(positions, 3); // End
-                    rayLine.geometry.attributes.position.needsUpdate = true;
-
-                    // Calc Geometry (Allocation-Free)
-                    // 1. Project to Infinite Line (computes vSeg=AB, vecToI=AP)
-                    // Returns UNCLAMPED t
-                    const t = projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
-
-                    // 2. Clamp t to [0, 1] for Segment
-                    const tClamped = Math.max(0, Math.min(1, t));
-
-                    // 3. Compute Clamped Closest Point on Segment
-                    closestPoint.copy(v1).addScaledVector(vSeg, tClamped);
-
-                    // Update Closest Point Marker (Yellow) - CLAMPED
-                    closestPtMarker.position.copy(closestPoint);
-
-                    // Update Connector Line (Green) - CLAMPED
-                    const connPos = connLine.geometry.attributes.position.array;
-                    ISO_WORLD.toArray(connPos, 0);
-                    closestPoint.toArray(connPos, 3);
-                    connLine.geometry.attributes.position.needsUpdate = true;
-                } else {
-                    if (isoMarker) isoMarker.visible = false;
-                    rayLine.visible = false;
-                    closestPtMarker.visible = false;
-                    connLine.visible = false;
-                }
-
-                const now = performance.now();
-                if (now - lastDebugUpdateRef.current > 100) { // 10Hz
-                    lastDebugUpdateRef.current = now;
-
-
-                    // --- 1. ALWAYS COMPUTE BEAM REGION (Physics) ---
-                    const bounds = patientBoundsRef.current;
-                    let zoneResult = ZONE_DEFS.miss;
-                    let isHitting = false;
-                    let normY = 0;
-
-                    if (patientModelRef.current && bounds.ready) {
-                        // --- OBB-STYLE INTERSECTION (Patient Local Space) ---
-                        // 1. Transform Beam Endpoints to Patient Local Space
-                        // Force update to ensure world matrix is fresh
-                        patientModelRef.current.updateMatrixWorld(true);
-
-                        localV1.copy(v1); // SRC
-                        patientModelRef.current.worldToLocal(localV1);
-
-                        localV2.copy(v2); // DET
-                        patientModelRef.current.worldToLocal(localV2);
-
-                        // 2. Build Local Ray
-                        localDir.subVectors(localV2, localV1);
-                        const localSid = localDir.length();
-                        localDir.normalize();
-
-                        rayLocal.set(localV1, localDir);
-
-                        // 3. Intersect against Patient Local AABB (which is OBB in world)
-                        localBox.min.set(bounds.minX, bounds.minY, bounds.minZ);
-                        localBox.max.set(bounds.maxX, bounds.maxY, bounds.maxZ);
-
-                        const hitEntry = rayLocal.intersectBox(localBox, entryLocal);
-
-                        if (hitEntry) {
-                            // Check if entry is within local SID
-                            const distEntry = entryLocal.distanceTo(localV1);
-
-                            if (distEntry <= localSid) {
-                                isHitting = true;
-
-                                // Compute Exit Point
-                                // Reverse ray from V2
-                                // reusing 'tempVec' for reverse dir
-                                tempVec.copy(localDir).multiplyScalar(-1);
-                                rayLocal.set(localV2, tempVec);
-                                const hitExit = rayLocal.intersectBox(localBox, exitLocal);
-
-                                if (!hitExit) {
-                                    exitLocal.copy(entryLocal); // Fallback
-                                }
-
-                                // Compute tEntry and tExit (normalized 0..1 along beam)
-                                const distExitFromDet = exitLocal.distanceTo(localV2);
-
-                                const tEntry = distEntry / localSid;
-                                const tExit = 1.0 - (distExitFromDet / localSid);
-
-                                // Ensure valid range
-                                const tStart = Math.max(0, tEntry);
-                                const tEnd = Math.min(1, tExit);
-
-                                if (tEnd > tStart) {
-                                    // --- MULTI-POINT SAMPLING & VOTING (SKELETON) ---
-                                    const SAMPLES = 9;
-                                    const counts = Object.create(null);
-                                    let bestSampleEdge = "";
-                                    let bestSampleD2 = Infinity;
-
-                                    const bodyAxes = getBodyAxes(bounds);
-
-                                    for (let i = 0; i < SAMPLES; i++) {
-                                        // Inclusive sampling
-                                        const t = (SAMPLES > 1) ? (tStart + (tEnd - tStart) * (i / (SAMPLES - 1))) : (tStart + tEnd) * 0.5;
-                                        sampleLocal.copy(localDir).multiplyScalar(t * localSid).add(localV1);
-
-                                        // Convert to UVW
-                                        const pUVW = localToUVW(sampleLocal, bounds, bodyAxes);
-
-                                        // Classify
-                                        const res = classifyUVWPointBySkeleton(pUVW);
-
-                                        // Voting Weight = 1 / (d2 + 1e-4)
-                                        const weight = 1.0 / (res.d2 + 1e-4);
-                                        counts[res.zone.key] = (counts[res.zone.key] || 0) + weight;
-
-                                        // Debug info (track closest sample)
-                                        if (res.d2 < bestSampleD2) {
-                                            bestSampleD2 = res.d2;
-                                            bestSampleEdge = res.bestEdgeName;
-                                            // Optional: Use normY for debug display if expected a number, but we store string
-                                            // beamNormYRef expects ? 
-                                            // existing code used it for number. We can store string.
-                                        }
-                                    }
-
-                                    // Pick Winner (Max Weight)
-                                    let bestKey = 'miss';
-                                    let bestWeight = -1;
-                                    for (const key in counts) {
-                                        if (counts[key] > bestWeight) {
-                                            bestWeight = counts[key];
-                                            bestKey = key;
-                                        }
-                                    }
-                                    zoneResult = ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
-
-                                    // Debug Text Update
-                                    beamNormYRef.current = `${bestSampleEdge} d:${Math.sqrt(bestSampleD2).toFixed(3)}`;
-                                }
-                            }
-                        }
-                    }
-
-                    // Update Refs & UI (Throttled)
-                    beamZoneKeyRef.current = zoneResult.key;
-                    beamRegionRef.current = zoneResult.label;
-                    beamHitRef.current = isHitting;
-                    if (!isHitting) beamNormYRef.current = null;
-
-                    setBeamRegionUI(zoneResult.label);
-                    setBeamZoneKeyUI(zoneResult.key);
-
-                    // --- UPDATE SKELETON DEBUG VISUALS ---
-                    if (skeletonDebugRef.current) {
-                        skeletonDebugRef.current.visible = debugEnabledRef.current;
-
-                        if (debugEnabledRef.current && patientModelRef.current && bounds.ready) {
-                            const bodyAxes = getBodyAxes(bounds);
-
-                            // Transform Helper: Canonical UVW -> World
-                            // Reuses localV1 and localV2 as scratch since they are recomputed next tick
-                            const uvwToWorld = (uvw, target) => {
-                                const local = target;
-                                // Map UVW (X=Lat, Y=Long, Z=Depth) to Local
-                                // local[axis] = uvw[normAxis] * span + min
-                                const setAxis = (axis, val) => {
-                                    local[axis] = val * (bounds['max' + axis.toUpperCase()] - bounds['min' + axis.toUpperCase()]) + bounds['min' + axis.toUpperCase()];
-                                };
-                                setAxis(bodyAxes.v, uvw.x); // V = Width
-                                setAxis(bodyAxes.u, uvw.y); // U = Height
-                                setAxis(bodyAxes.w, uvw.z); // W = Depth
-
-                                local.applyMatrix4(patientModelRef.current.matrixWorld);
-                                return local;
-                            };
-
-                            // Update Nodes
-                            skeletonDebugRef.current.children.forEach(child => {
-                                if (SKELETON_NODES_UVW[child.name]) {
-                                    const uvw = SKELETON_NODES_UVW[child.name];
-                                    uvwToWorld(uvw, child.position);
-                                } else if (child.type === 'Line') {
-                                    // Update Edges
-                                    const edge = SKELETON_EDGES.find(e => e.name === child.name);
-                                    if (edge) {
-                                        const pos = child.geometry.attributes.position.array;
-                                        const start = localV1;
-                                        const end = localV2;
-
-                                        uvwToWorld(SKELETON_NODES_UVW[edge.a], start);
-                                        uvwToWorld(SKELETON_NODES_UVW[edge.b], end);
-
-                                        start.toArray(pos, 0);
-                                        end.toArray(pos, 3);
-                                        child.geometry.attributes.position.needsUpdate = true;
-                                    }
-                                }
-                            });
-                        }
-                    } // end debug update
-
-
-                    // --- 2. DEBUG READOUT (Optional) ---
+                    // --- DEBUG UPDATE ---
                     if (debugEnabledRef.current) {
-                        // Re-calc geometry primitives for readout logic if needed, 
-                        // or just rely on standard ones. 
-                        // Note: primitives (v1, v2) are fresh. But 't', 'closestPoint' were 
-                        // computed inside the visual block above. 
-                        // Safest to re-compute specific metrics needed for text.
+                        if (isoMarker) isoMarker.visible = true;
+                        rayLine.visible = true;
+                        closestPtMarker.visible = true;
+                        connLine.visible = true;
 
-                        // IsoRay: Distance to INFINITE line (via tempVec)
-                        projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
-                        const isoRayDist = ISO_WORLD.distanceTo(tempVec);
+                        // Update Ray Line
+                        const positions = rayLine.geometry.attributes.position.array;
+                        v1.toArray(positions, 0);
+                        v2.toArray(positions, 3);
+                        rayLine.geometry.attributes.position.needsUpdate = true;
 
-                        // IsoSeg: Distance to FINITE segment (via closestPoint)
+                        // Calc Geometry
                         const t = projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
                         const tClamped = Math.max(0, Math.min(1, t));
                         closestPoint.copy(v1).addScaledVector(vSeg, tClamped);
-                        const isoSegDist = ISO_WORLD.distanceTo(closestPoint);
+                        closestPtMarker.position.copy(closestPoint);
 
-                        // MidToIso: Midpoint of Segment
-                        tempVec.addVectors(v1, v2).multiplyScalar(0.5);
-                        const midToIso = tempVec.distanceTo(ISO_WORLD);
-
-                        // Beam Angle Check (Alignment Debug)
-                        beamRef.current.updateMatrixWorld();
-                        beamAxisWorld.copy(yAxis).applyQuaternion(beamRef.current.quaternion);
-                        const angleDeg = beamAxisWorld.angleTo(dir) * 180 / Math.PI;
-
-                        // Beam Base Error Check
-                        tempVec.set(0, 1, 0).applyMatrix4(beamRef.current.matrixWorld);
-                        const beamBaseErr = tempVec.distanceTo(v2);
-
-                        const newReadout = {
-                            src: v1.toArray().map(n => n.toFixed(3)),
-                            det: v2.toArray().map(n => n.toFixed(3)),
-                            sid: distance.toFixed(3),
-                            midToIso: midToIso.toFixed(3),
-                            isoRay: isoRayDist.toFixed(3),
-                            isoSeg: isoSegDist.toFixed(3),
-                            t: t.toFixed(3), // Show UNCLAMPED t
-                            beamAngle: angleDeg.toFixed(3),
-                            beamErr: beamBaseErr.toFixed(3),
-                            beamRegion: zoneResult.label,
-                            hitStatus: isHitting ? "HIT" : "MISS",
-                            normY: beamNormYRef.current || "NA"
-                        };
-                        setDebugReadout(newReadout);
+                        // Update Connector
+                        const connPos = connLine.geometry.attributes.position.array;
+                        ISO_WORLD.toArray(connPos, 0);
+                        closestPoint.toArray(connPos, 3);
+                        connLine.geometry.attributes.position.needsUpdate = true;
+                    } else {
+                        if (isoMarker) isoMarker.visible = false;
+                        rayLine.visible = false;
+                        closestPtMarker.visible = false;
+                        connLine.visible = false;
                     }
 
+                    const now = performance.now();
+                    if (now - lastDebugUpdateRef.current > 100) { // 10Hz
+                        lastDebugUpdateRef.current = now;
 
-                } // End 10Hz
+                        // --- 1. ALWAYS COMPUTE BEAM REGION (Physics) ---
+                        const bounds = patientBoundsRef.current;
+                        let zoneResult = ZONE_DEFS.miss;
+                        let isHitting = false;
 
-            } // End srcAnchorRef check
+                        if (patientModelRef.current && bounds.ready) {
+                            // --- OBB-STYLE INTERSECTION (Patient Local Space) ---
+                            patientModelRef.current.updateMatrixWorld(true);
 
-            renderer.render(scene, camera);
+                            localV1.copy(v1); // SRC
+                            patientModelRef.current.worldToLocal(localV1);
+
+                            localV2.copy(v2); // DET
+                            patientModelRef.current.worldToLocal(localV2);
+
+                            localDir.subVectors(localV2, localV1);
+                            const localSid = localDir.length();
+                            localDir.normalize();
+                            rayLocal.set(localV1, localDir);
+
+                            localBox.min.set(bounds.minX, bounds.minY, bounds.minZ);
+                            localBox.max.set(bounds.maxX, bounds.maxY, bounds.maxZ);
+
+                            const hitEntry = rayLocal.intersectBox(localBox, entryLocal);
+
+                            if (hitEntry) {
+                                const distEntry = entryLocal.distanceTo(localV1);
+                                if (distEntry <= localSid) {
+                                    isHitting = true;
+
+                                    tempVec.copy(localDir).multiplyScalar(-1);
+                                    rayLocal.set(localV2, tempVec);
+                                    const hitExit = rayLocal.intersectBox(localBox, exitLocal);
+                                    if (!hitExit) exitLocal.copy(entryLocal);
+
+                                    const distExitFromDet = exitLocal.distanceTo(localV2);
+                                    const tEntry = distEntry / localSid;
+                                    const tExit = 1.0 - (distExitFromDet / localSid);
+                                    const tStart = Math.max(0, tEntry);
+                                    const tEnd = Math.min(1, tExit);
+
+                                    if (tEnd > tStart) {
+                                        // --- MULTI-POINT SAMPLING (STRICT SKELETON) ---
+                                        const SAMPLES = 9;
+                                        const counts = Object.create(null);
+                                        let bestSampleEdge = "";
+                                        let bestSampleD2 = Infinity;
+
+                                        // 1. Build Local Landmarks (With Offsets)
+                                        const axes = getInferredPatientAxes(bounds);
+                                        const localLandmarks = {};
+                                        Object.keys(LANDMARKS_NORM).forEach(key => {
+                                            localLandmarks[key] = landmarkLocal(key, bounds, axes);
+                                        });
+
+                                        for (let i = 0; i < SAMPLES; i++) {
+                                            const t = (SAMPLES > 1) ? (tStart + (tEnd - tStart) * (i / (SAMPLES - 1))) : (tStart + tEnd) * 0.5;
+                                            sampleLocal.copy(localDir).multiplyScalar(t * localSid).add(localV1);
+
+                                            // 2. Classify
+                                            const res = classifyLocalPointBySkeleton(sampleLocal, localLandmarks);
+
+                                            // 3. Vote (Weight = 1 / d^2)
+                                            const weight = 1.0 / (res.d2 + 1e-4);
+                                            counts[res.zone.key] = (counts[res.zone.key] || 0) + weight;
+
+                                            if (res.d2 < bestSampleD2) {
+                                                bestSampleD2 = res.d2;
+                                                bestSampleEdge = res.edge;
+                                            }
+                                        }
+
+                                        // Pick Winner
+                                        let bestKey = 'miss';
+                                        let bestWeight = -1;
+                                        for (const key in counts) {
+                                            if (counts[key] > bestWeight) {
+                                                bestWeight = counts[key];
+                                                bestKey = key;
+                                            }
+                                        }
+                                        zoneResult = ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
+                                        beamNormYRef.current = `${bestSampleEdge} d:${Math.sqrt(bestSampleD2).toFixed(3)}`;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Update Refs & UI
+                        beamZoneKeyRef.current = zoneResult.key;
+                        beamRegionRef.current = zoneResult.label;
+                        beamHitRef.current = isHitting;
+                        if (!isHitting) beamNormYRef.current = null;
+
+                        setBeamRegionUI(zoneResult.label);
+                        setBeamZoneKeyUI(zoneResult.key);
+
+                        // --- UPDATE SKELETON DEBUG VISUALS (Toggle 'L') ---
+                        if (skeletonDebugRef.current) {
+                            // Only visible if 'L' key active (we need to add that state, currently using debugEnabled)
+                            // User asked for 'L' toggle. Let's assume debugEnabled covers it for now OR add dedicated state.
+                            // Requirement: "Add a toggle key (e.g. 'L') to show/hide landmark spheres."
+                            // We need a new state for landmarks. Let's use a ref for now to avoid re-renders?
+                            // No, state `showLandmarks` is better.
+                            // But for minimal churn, let's piggyback on debugEnabled but filter visibility?
+                            // Actually, I should add the toggle.
+                            // For now, I'll use `showLandmarksRef.current`. I need to add that ref.
+
+                            skeletonDebugRef.current.visible = showLandmarksRef.current;
+
+                            if (showLandmarksRef.current && patientModelRef.current && bounds.ready) {
+                                // Re-compute corrected nodes
+                                const axes = getInferredPatientAxes(bounds);
+                                const localLandmarks = {};
+                                Object.keys(LANDMARKS_NORM).forEach(key => {
+                                    localLandmarks[key] = landmarkLocal(key, bounds, axes);
+                                });
+
+                                // Render Spheres
+                                // Render Debug Objects
+                                skeletonDebugRef.current.children.forEach(child => {
+                                    // 1. Is it a Landmark?
+                                    const local = localLandmarks[child.name];
+                                    if (local) {
+                                        child.visible = true;
+                                        const world = local.clone().applyMatrix4(patientModelRef.current.matrixWorld);
+                                        child.position.copy(world);
+                                    } else {
+                                        // 2. Is it an Edge?
+                                        const edge = EDGES.find(e => e.join('-') === child.name);
+                                        if (edge) {
+                                            const startLocal = localLandmarks[edge[0]];
+                                            const endLocal = localLandmarks[edge[1]];
+
+                                            if (startLocal && endLocal) {
+                                                child.visible = true;
+                                                const pos = child.geometry.attributes.position.array;
+
+                                                // Transform to World
+                                                const startWorld = startLocal.clone().applyMatrix4(patientModelRef.current.matrixWorld);
+                                                const endWorld = endLocal.clone().applyMatrix4(patientModelRef.current.matrixWorld);
+
+                                                startWorld.toArray(pos, 0);
+                                                endWorld.toArray(pos, 3);
+                                                child.geometry.attributes.position.needsUpdate = true;
+                                            } else {
+                                                child.visible = false;
+                                            }
+                                        } else {
+                                            // Neither landmark nor edge
+                                            child.visible = false;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        // --- 2. DEBUG READOUT ---
+                        if (debugEnabledRef.current) {
+                            // (Keep existing debug readout logic...)
+                            // For brevity in replacement, I'll allow the existing readout logic to remain if I didn't cut it.
+                            // But I am replacing the block. So I must re-include it.
+
+                            projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
+                            const isoRayDist = ISO_WORLD.distanceTo(tempVec);
+                            const t = projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
+                            closestPoint.copy(v1).addScaledVector(vSeg, Math.max(0, Math.min(1, t)));
+                            const isoSegDist = ISO_WORLD.distanceTo(closestPoint);
+
+                            tempVec.addVectors(v1, v2).multiplyScalar(0.5);
+                            const midToIso = tempVec.distanceTo(ISO_WORLD);
+
+                            beamRef.current.updateMatrixWorld();
+                            beamAxisWorld.copy(yAxis).applyQuaternion(beamRef.current.quaternion);
+                            const angleDeg = beamAxisWorld.angleTo(dir) * 180 / Math.PI;
+
+                            tempVec.set(0, 1, 0).applyMatrix4(beamRef.current.matrixWorld);
+                            const beamBaseErr = tempVec.distanceTo(v2);
+
+                            setDebugReadout({
+                                src: v1.toArray().map(n => n.toFixed(3)),
+                                det: v2.toArray().map(n => n.toFixed(3)),
+                                sid: distance.toFixed(3),
+                                midToIso: midToIso.toFixed(3),
+                                isoRay: isoRayDist.toFixed(3),
+                                isoSeg: isoSegDist.toFixed(3),
+                                t: t.toFixed(3),
+                                beamAngle: angleDeg.toFixed(3),
+                                beamErr: beamBaseErr.toFixed(3),
+                                beamRegion: zoneResult.label,
+                                hitStatus: isHitting ? "HIT" : "MISS",
+                                normY: beamNormYRef.current || "NA"
+                            });
+                        }
+                    }
+                } // End physics loop
+
+                renderer.render(scene, camera);
+
+            } catch (err) {
+                console.error("[animate crash]", err);
+                cancelAnimationFrame(reqId);
+            }
         };
         animate();
 
