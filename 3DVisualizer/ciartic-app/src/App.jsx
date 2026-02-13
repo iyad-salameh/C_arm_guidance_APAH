@@ -98,77 +98,101 @@ const ZONE_DEFS = {
 // Axis Mapping Config (Swap if your GLB is rotated)
 const ANATOMY_AXES = { up: 'y', leftRight: 'x', frontBack: 'z' };
 
-// Helper: Compute Zone from Local Point & Bounds
-const computeZoneFromLocalPoint = (local, bounds) => {
-    // 1. Normalize based on configured axes
-    const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
+// --- ROBUST ZONE CLASSIFIER HELPERS ---
 
-    // Safety check for zero-size bounds
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Torso corridor radius as a function of height (normY: 0=feet, 1=head)
+// Tuned for "generic supine-ish patient" with explicit piecewise values
+const torsoRadiusAtY = (normY) => {
+    if (normY >= 0.80) return 0.28; // Shoulders / Upper Chest
+    if (normY >= 0.65) return 0.24; // Thorax
+    if (normY >= 0.50) return 0.20; // Upper Abdomen / Waist
+    if (normY >= 0.38) return 0.24; // Pelvis / Hips
+    return 0.18;                    // Lower limb trunk transition / Legs
+};
+
+// Robust Point Classifier (Patient Local Space)
+const computeZoneFromLocalPointSmart = (local, bounds) => {
+    const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
+    // Safety for zero-size
     const spanX = Math.max(1e-6, maxX - minX);
     const spanY = Math.max(1e-6, maxY - minY);
     const spanZ = Math.max(1e-6, maxZ - minZ);
 
-    const normX = Math.max(0, Math.min(1, (local.x - minX) / spanX));
-    const normY = Math.max(0, Math.min(1, (local.y - minY) / spanY));
-    const normZ = Math.max(0, Math.min(1, (local.z - minZ) / spanZ));
+    const normX = clamp01((local.x - minX) / spanX);
+    const normY = clamp01((local.y - minY) / spanY);
+    const normZ = clamp01((local.z - minZ) / spanZ);
 
-    // Map to anatomy axes (Default: Y=Up, X/Z=Lateral Plane)
-    // Using simple property access based on config
-    // Note: This assumes bounds match logical axes but
-    // the semantic meaning (Up/Lateral) is what we map here.
+    // Centered coords (assuming X/Z are lateral axes)
+    const cx = normX - 0.5;
+    const cz = normZ - 0.5;
 
-    let normUp = normY;     // Default Y
-    let nLat1 = normX - 0.5; // Center X
-    let nLat2 = normZ - 0.5; // Center Z
+    // Lateral from centerline
+    const lateral = Math.sqrt(cx * cx + cz * cz);
 
-    if (ANATOMY_AXES.up === 'z') {
-        normUp = normZ;
-        nLat1 = normX - 0.5;
-        nLat2 = normY - 0.5;
-    } else if (ANATOMY_AXES.up === 'x') {
-        normUp = normX;
-        nLat1 = normY - 0.5;
-        nLat2 = normZ - 0.5;
+    // Torso corridor check
+    const torsoR = torsoRadiusAtY(normY);
+    const inTorso = lateral <= torsoR;
+
+    // --- 1) AXIAL (Torso) ---
+    if (inTorso) {
+        if (normY > 0.86) return ZONE_DEFS.head;
+        if (normY >= 0.70) return ZONE_DEFS.thorax;
+        if (normY >= 0.56) return ZONE_DEFS.abdomen;
+        if (normY >= 0.42) return ZONE_DEFS.pelvis;
+
+        // Below 0.42 but still "inTorso" (central):
+        // Transition to lower limbs or stick to pelvis if high enough
+        if (normY >= 0.38) return ZONE_DEFS.pelvis;
+
+        // Default fall-through to lower limb logic below if very low in torso
     }
 
-    // Lateral Distance (from center line)
-    const lateral = Math.sqrt(nLat1 * nLat1 + nLat2 * nLat2);
+    // --- 2) LIMBS (Appendicular) ---
+    // Decision: Upper vs Lower limb based on height relative to pelvis
+    // Anti-weird-pose: Force lower limb if below 0.30 regardless of "arm" appearance
+    const isUpperLimbHeight = normY >= 0.45;
 
-    // 3. Classification Rules
-    let zone = ZONE_DEFS.foot; // Default bottom
+    if (isUpperLimbHeight && normY >= 0.30) {
+        // --- UPPER LIMB ---
+        if (normY > 0.72) return ZONE_DEFS.shoulder;
+        if (normY >= 0.58) return ZONE_DEFS.humerus;
+        if (normY >= 0.42) return ZONE_DEFS.forearm;
 
-    // Rule 1: Upper Limb Detection
-    const ARM_LATERAL_THRESHOLD = 0.28;
-    const ARM_MIN_NORM_UP = 0.34; // Guard: Must be above pelvis height to be an arm
-    const HAND_LATERAL_THRESHOLD = 0.38; // Hands are further out
-
-    const isArm = lateral > ARM_LATERAL_THRESHOLD && normUp > ARM_MIN_NORM_UP;
-
-    if (isArm) {
-        if (normUp > 0.72) zone = ZONE_DEFS.shoulder;
-        else if (normUp > 0.55) zone = ZONE_DEFS.humerus;
-        else if (normUp > 0.38) zone = ZONE_DEFS.forearm;
-        else {
-            // Hand check: needs to be lateral enough
-            if (lateral > HAND_LATERAL_THRESHOLD) zone = ZONE_DEFS.hand;
-            else zone = ZONE_DEFS.forearm;
-        }
+        // Hand is below 0.42 but mapped as upper limb
+        return ZONE_DEFS.hand;
     } else {
-        // Rule 2: Axial Skeleton (Head/Torso/Pelvis)
-        if (normUp > 0.86) zone = ZONE_DEFS.head;
-        else if (normUp > 0.68) zone = ZONE_DEFS.thorax;
-        else if (normUp > 0.52) zone = ZONE_DEFS.abdomen;
-        else if (normUp > 0.42) zone = ZONE_DEFS.pelvis;
+        // --- LOWER LIMB ---
+        if (normY >= 0.26) return ZONE_DEFS.femur;
+        if (normY >= 0.22) return ZONE_DEFS.knee;
+        if (normY >= 0.10) return ZONE_DEFS.tibia;
+        if (normY >= 0.06) return ZONE_DEFS.ankle;
+        return ZONE_DEFS.foot;
+    }
+};
 
-        // Rule 3: Lower Limb Segmentation
-        else if (normUp > 0.26) zone = ZONE_DEFS.femur;
-        else if (normUp > 0.22) zone = ZONE_DEFS.knee;
-        else if (normUp > 0.10) zone = ZONE_DEFS.tibia;
-        else if (normUp > 0.06) zone = ZONE_DEFS.ankle;
-        else zone = ZONE_DEFS.foot;
+// Majority vote with a small bias toward torso zones to avoid "arm steals chest".
+const pickZoneFromVotes = (counts) => {
+    let bestKey = 'miss';
+    let bestScore = -1;
+
+    for (const [key, n] of Object.entries(counts)) {
+        let score = n;
+
+        // torso bias to stabilize axial views
+        if (key === 'thorax' || key === 'abdomen' || key === 'pelvis' || key === 'head') {
+            score += 0.35;
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestKey = key;
+        }
     }
 
-    return { zone, normX, normY, normZ, lateral, normUp };
+    return ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
 };
 
 // Legacy fallback for cart_x logic (mapped to new keys)
@@ -854,6 +878,16 @@ const App = () => {
         const boxMid = new THREE.Vector3();
         const patientBoxWorld = new THREE.Box3();
 
+        // --- NEW PRE-ALLOCATIONS FOR ROBUST ZONING ---
+        const localV1 = new THREE.Vector3();
+        const localV2 = new THREE.Vector3();
+        const localDir = new THREE.Vector3();
+        const localBox = new THREE.Box3();
+        const entryLocal = new THREE.Vector3();
+        const exitLocal = new THREE.Vector3();
+        const rayLocal = new THREE.Ray();
+        const sampleLocal = new THREE.Vector3(); // Reused for sampling
+
         let reqId;
         const animate = () => {
             reqId = requestAnimationFrame(animate);
@@ -929,6 +963,7 @@ const App = () => {
                 if (now - lastDebugUpdateRef.current > 100) { // 10Hz
                     lastDebugUpdateRef.current = now;
 
+
                     // --- 1. ALWAYS COMPUTE BEAM REGION (Physics) ---
                     const bounds = patientBoundsRef.current;
                     let zoneResult = ZONE_DEFS.miss;
@@ -936,39 +971,97 @@ const App = () => {
                     let normY = 0;
 
                     if (patientModelRef.current && bounds.ready) {
-                        patientBoxWorld.setFromObject(patientModelRef.current);
+                        // --- OBB-STYLE INTERSECTION (Patient Local Space) ---
+                        // 1. Transform Beam Endpoints to Patient Local Space
+                        // Force update to ensure world matrix is fresh
+                        patientModelRef.current.updateMatrixWorld(true);
 
-                        // Forward Ray (SRC -> DET)
-                        rayFwd.set(v1, dir);
-                        const hitEntry = rayFwd.intersectBox(patientBoxWorld, boxEntry);
+                        localV1.copy(v1); // SRC
+                        patientModelRef.current.worldToLocal(localV1);
+
+                        localV2.copy(v2); // DET
+                        patientModelRef.current.worldToLocal(localV2);
+
+                        // 2. Build Local Ray
+                        localDir.subVectors(localV2, localV1);
+                        const localSid = localDir.length();
+                        localDir.normalize();
+
+                        rayLocal.set(localV1, localDir);
+
+                        // 3. Intersect against Patient Local AABB (which is OBB in world)
+                        localBox.min.set(bounds.minX, bounds.minY, bounds.minZ);
+                        localBox.max.set(bounds.maxX, bounds.maxY, bounds.maxZ);
+
+                        const hitEntry = rayLocal.intersectBox(localBox, entryLocal);
 
                         if (hitEntry) {
-                            // Check if entry is within SID (beam length)
-                            const distToEntry = boxEntry.distanceTo(v1);
-                            if (distToEntry <= sid) {
+                            // Check if entry is within local SID
+                            const distEntry = entryLocal.distanceTo(localV1);
+
+                            if (distEntry <= localSid) {
                                 isHitting = true;
 
-                                // Optional: Backward Ray for exit point (DET -> SRC)
-                                // dir is normalized SRC->DET, so reverse for rayBack
-                                tempVec.copy(dir).multiplyScalar(-1);
-                                rayBack.set(v2, tempVec);
-                                const hitExit = rayBack.intersectBox(patientBoxWorld, boxExit);
+                                // Compute Exit Point
+                                // Reverse ray from V2
+                                // reusing 'tempVec' for reverse dir
+                                tempVec.copy(localDir).multiplyScalar(-1);
+                                rayLocal.set(localV2, tempVec);
+                                const hitExit = rayLocal.intersectBox(localBox, exitLocal);
 
-                                if (hitExit) {
-                                    // Use Midpoint
-                                    boxMid.addVectors(boxEntry, boxExit).multiplyScalar(0.5);
-                                } else {
-                                    // Fallback to entry
-                                    boxMid.copy(boxEntry);
+                                if (!hitExit) {
+                                    exitLocal.copy(entryLocal); // Fallback
                                 }
 
-                                // Local Mapping
-                                patientModelRef.current.worldToLocal(boxMid); // Mutates boxMid to local space
+                                // Compute tEntry and tExit (normalized 0..1 along beam)
+                                const distExitFromDet = exitLocal.distanceTo(localV2);
 
-                                // Compute Zone from Local Point
-                                const result = computeZoneFromLocalPoint(boxMid, bounds);
-                                zoneResult = result.zone;
-                                normY = result.normUp; // Use aligned 'Up' for debug/refs
+                                const tEntry = distEntry / localSid;
+                                const tExit = 1.0 - (distExitFromDet / localSid);
+
+                                // Ensure valid range
+                                const tStart = Math.max(0, tEntry);
+                                const tEnd = Math.min(1, tExit);
+
+                                if (tEnd > tStart) {
+                                    // --- MULTI-POINT SAMPLING & VOTING ---
+                                    const SAMPLES = 9;
+                                    const counts = Object.create(null);
+                                    let midNormY = 0;
+
+                                    for (let i = 0; i < SAMPLES; i++) {
+                                        // Midpoint sampling per bin
+                                        const u = (i + 0.5) / SAMPLES;
+                                        const t = tStart + u * (tEnd - tStart);
+
+                                        // sampleLocal = localV1 + localDir * (t * localSid)
+                                        sampleLocal.copy(localDir).multiplyScalar(t * localSid).add(localV1);
+
+                                        // Validate sample is actually in box (precision issues)
+                                        // Not strictly needed if tStart/tEnd are correct, but good safety.
+
+                                        // Classify
+                                        const z = computeZoneFromLocalPointSmart(sampleLocal, bounds);
+
+                                        // Weighted Voting
+                                        // Prefer axial keys slightly to avoid "arm flicker" in torso shots
+                                        const axialKeys = ['head', 'thorax', 'abdomen', 'pelvis'];
+                                        const weight = axialKeys.includes(z.key) ? 1.2 : 1.0;
+
+                                        counts[z.key] = (counts[z.key] || 0) + weight;
+
+                                        // Capture middle sample for debug
+                                        if (i === Math.floor(SAMPLES / 2)) {
+                                            // Re-normalize to get normY for debug display
+                                            const spanY = bounds.maxY - bounds.minY;
+                                            midNormY = (sampleLocal.y - bounds.minY) / spanY;
+                                        }
+                                    }
+
+                                    // Pick Winner
+                                    zoneResult = pickZoneFromVotes(counts);
+                                    normY = midNormY;
+                                }
                             }
                         }
                     }
