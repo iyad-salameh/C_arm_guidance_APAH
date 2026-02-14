@@ -82,6 +82,8 @@ const ZONE_DEFS = {
 
     // Upper limb (both sides)
     shoulder: { key: 'shoulder', label: 'SHOULDER / CLAVICLE' },
+    left_shoulder: { key: 'left_shoulder', label: 'LEFT SHOULDER' },
+    right_shoulder: { key: 'right_shoulder', label: 'RIGHT SHOULDER' },
     humerus: { key: 'humerus', label: 'HUMERUS / ELBOW' },
     forearm: { key: 'forearm', label: 'FOREARM / WRIST' },
     hand: { key: 'hand', label: 'HAND / FINGERS' },
@@ -247,7 +249,11 @@ const getZoneKeyForEdge = (startNode, endNode, t) => {
         if (t > 0.7) return ZONE_DEFS.hand;
         return ZONE_DEFS.forearm;
     }
-    if (key.includes("upperSpine") && key.includes("Shoulder")) return ZONE_DEFS.shoulder;
+    if (key.includes("upperSpine") && key.includes("Shoulder")) {
+        if (key.includes("left")) return ZONE_DEFS.left_shoulder;
+        if (key.includes("right")) return ZONE_DEFS.right_shoulder;
+        return ZONE_DEFS.shoulder;
+    }
 
     return ZONE_DEFS.miss;
 };
@@ -388,6 +394,54 @@ const App = () => {
     const showLandmarksRef = useRef(false);
     const hasRenderedInitialRef = useRef(false);
 
+    // --- REAL X-RAY IMAGE PRELOADING ---
+    const LANDMARK_IMAGE_MAP = {
+        thorax: {
+            dir: '/xrays/chest/',
+            files: Array.from({ length: 15 }, (_, i) => `case-${1001 + i}.png`)
+        },
+        left_shoulder: {
+            dir: '/xrays/left_shoulder/',
+            files: Array.from({ length: 15 }, (_, i) => `case-${1016 + i}.png`)
+        },
+        right_shoulder: {
+            dir: '/xrays/right_shoulder/',
+            files: Array.from({ length: 15 }, (_, i) => `case-${1031 + i}.png`)
+        },
+        pelvis: {
+            dir: '/xrays/pelvis/',
+            files: Array.from({ length: 15 }, (_, i) => `case-${1046 + i}.png`)
+        }
+    };
+
+    const xrayImagesRef = useRef({});
+    const [xrayImagesLoaded, setXrayImagesLoaded] = useState(false);
+
+    // Preload all landmark X-ray images on mount
+    useEffect(() => {
+        const imageMap = {};
+        const promises = [];
+        for (const [zoneKey, config] of Object.entries(LANDMARK_IMAGE_MAP)) {
+            imageMap[zoneKey] = [];
+            config.files.forEach((filename) => {
+                const url = config.dir + filename;
+                const img = new Image();
+                const p = new Promise((resolve) => {
+                    img.onload = () => resolve();
+                    img.onerror = () => { console.warn(`Failed to load: ${url}`); resolve(); };
+                });
+                img.src = url;
+                imageMap[zoneKey].push({ url, img });
+                promises.push(p);
+            });
+        }
+        xrayImagesRef.current = imageMap;
+        Promise.all(promises).then(() => {
+            console.log('All landmark X-ray images preloaded.');
+            setXrayImagesLoaded(true);
+        });
+    }, []);
+
 
     // --- DYNAMIC ANATOMY GENERATOR ---
     const generateRealisticXray = (currentControls = controls, zoneKeyOverride = null) => {
@@ -405,6 +459,24 @@ const App = () => {
         }
 
         const anatomyType = zone.label;
+
+        // 2. Check if this zone has real X-ray images
+        const realImageZoneKey = zone.key;
+        const imageSet = xrayImagesRef.current[realImageZoneKey];
+        if (imageSet && imageSet.length > 0) {
+            // Select image based on orbital angle for variety
+            const orbitalDeg = (orbital_slide * 180 / Math.PI + 180) % 360;
+            const imageIndex = Math.floor(orbitalDeg / 360 * imageSet.length) % imageSet.length;
+            const selectedImage = imageSet[imageIndex];
+
+            // Update UI state with anatomy name
+            setCurrentAnatomy(anatomyType);
+
+            // Return the real image URL
+            return selectedImage.url;
+        }
+
+        // 3. Fallback: Generate SVG for zones without real images
         let svgContent = "";
 
         // Normalize rotation for view width (cos effect for rotation)
@@ -482,6 +554,8 @@ const App = () => {
                 break;
 
             case 'shoulder':
+            case 'left_shoulder':
+            case 'right_shoulder':
                 svgContent = `
                 <!-- Clavicle -->
                 <path d="M ${20 + spineOffset} 30 Q ${50 + spineOffset} 40 ${80 + spineOffset} 30" stroke="${boneFill}" stroke-width="8" opacity="${boneOpacity}" filter="url(#blur)" />
@@ -1902,7 +1976,7 @@ const App = () => {
                 </div>
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
                     {lastXray ? (
-                        <img src={lastXray} alt="Xray" style={{ width: '100%', height: '100%', objectFit: 'contain', filter: beamActive ? 'brightness(1.6) contrast(1.1) drop-shadow(0 0 5px white)' : 'none' }} />
+                        <img src={lastXray} alt="Xray" style={{ width: '100%', height: '100%', objectFit: 'contain', transform: 'rotate(-90deg)', filter: beamActive ? 'brightness(1.6) contrast(1.1) drop-shadow(0 0 5px white)' : 'none' }} />
                     ) : (
                         <div style={{ color: '#333', fontSize: '9px', letterSpacing: '1px' }}>
                             {beamActive ? "EXPOSING..." : (currentAnatomy === "READY" ? "READY" : currentAnatomy)}
