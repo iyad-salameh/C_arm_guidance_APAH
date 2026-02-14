@@ -728,8 +728,20 @@ const App = () => {
         sun.shadow.mapSize.height = 2048;
         scene.add(sun);
 
-        // --- ENVIRONMENT ---
-        const floor = new THREE.Mesh(new THREE.PlaneGeometry(15, 15), new THREE.MeshStandardMaterial({ color: 0xe0e6eb, roughness: 0.6 }));
+        // --- FLOOR ---
+        const floorLoader = new THREE.TextureLoader();
+        const marbleTexture = floorLoader.load('/marbleFloor.jpg');
+        marbleTexture.wrapS = THREE.RepeatWrapping;
+        marbleTexture.wrapT = THREE.RepeatWrapping;
+        marbleTexture.repeat.set(4, 4); // Tile 4x4 times
+
+        const floorMaterial = new THREE.MeshStandardMaterial({
+            map: marbleTexture,
+            roughness: 0.1, // Shiny
+            metalness: 0.1
+        });
+
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(15, 15), floorMaterial);
         floor.rotation.x = -Math.PI / 2;
         floor.receiveShadow = true;
         scene.add(floor);
