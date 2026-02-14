@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { projectPointToLineParamsInto } from './utils/imagingGeometry.js';
+import ControllerPanel from './components/ControllerPanel';
 
 const R2D = 180 / Math.PI;
 const D2R = Math.PI / 180;
@@ -1346,7 +1347,6 @@ const App = () => {
 
     const containerStyle = { position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#eef2f5', fontFamily: 'sans-serif', color: '#333' };
     const xrayStyle = { position: 'absolute', top: '20px', left: '20px', width: '200px', height: '220px', backgroundColor: '#000', borderRadius: '8px', border: '2px solid #333', display: 'flex', flexDirection: 'column', overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.3)', color: '#fff' };
-    const controlsStyle = { position: 'absolute', top: '260px', left: '20px', width: '280px', backgroundColor: 'rgba(255,255,255,0.95)', padding: '20px', borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.1)', pointerEvents: 'auto' };
 
     return (
         <div style={containerStyle}>
@@ -1413,60 +1413,33 @@ const App = () => {
                         <div style={{ position: 'absolute', top: '20px', right: '10px', color: 'red', fontSize: '9px', fontWeight: 'bold', animation: 'pulse 0.4s infinite' }}>RADIATION ON</div>
                     )}
                 </div>
+                {/* Download Button Moved Here */}
+                <button
+                    onClick={handleDownloadXray}
+                    disabled={!lastXray || beamActive}
+                    style={{
+                        width: '100%',
+                        padding: '8px',
+                        backgroundColor: (!lastXray || beamActive) ? '#222' : '#444',
+                        color: (!lastXray || beamActive) ? '#555' : 'white',
+                        border: 'none',
+                        borderTop: '1px solid #333',
+                        fontSize: '9px',
+                        fontWeight: 'bold',
+                        cursor: (!lastXray || beamActive) ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.2s'
+                    }}>
+                    DOWNLOAD X-RAY
+                </button>
             </div>
 
-            <div style={controlsStyle}>
-                <div style={{ display: 'flex', alignItems: 'center', marginBottom: '15px' }}>
-                    <div style={{ width: '30px', height: '30px', background: '#ff6600', borderRadius: '6px', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', marginRight: '10px' }}>C</div>
-                    <div><h3 style={{ margin: 0, fontSize: '14px' }}>CIARTIC Move</h3><span style={{ fontSize: '10px', color: '#888' }}>ROBOTIC SYSTEM</span></div>
-                </div>
-                {modelLoading && <div style={{ fontSize: '10px', color: '#888', marginBottom: '10px' }}>Loading Patient Model...</div>}
-                {Object.entries(CONTROL_SPECS).map(([key, spec]) => {
-                    const val = controls[key];
-                    const displayVal = spec.type === 'rotate'
-                        ? (val * R2D).toFixed(1) + '°'
-                        : val.toFixed(2) + 'm';
-
-                    return (
-                        <div key={key} style={{ marginBottom: '12px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#666' }}>
-                                {spec.label}
-                                <span style={{ color: '#ff6600' }}>{displayVal}</span>
-                            </div>
-                            <input type="range"
-                                min={spec.min}
-                                max={spec.max}
-                                step={spec.step}
-                                value={val}
-                                disabled={beamActive}
-                                onChange={e => !beamActive && setControls({ ...controls, [key]: parseFloat(e.target.value) })}
-                                style={{ width: '100%', cursor: beamActive ? 'not-allowed' : 'pointer', opacity: beamActive ? 0.5 : 1 }} />
-                        </div>
-                    );
-                })}
-                <div style={{ marginTop: '20px', borderTop: '1px solid #eee', paddingTop: '15px' }}>
-                    <button onClick={handleTakeXray} disabled={beamActive} style={{ width: '100%', padding: '12px', backgroundColor: beamActive ? '#ff0000' : '#333', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: beamActive ? 'not-allowed' : 'pointer', transition: 'background 0.2s' }}>
-                        {beamActive ? 'EXPOSING...' : 'TAKE X-RAY'}
-                    </button>
-                    <button
-                        onClick={handleDownloadXray}
-                        disabled={!lastXray || beamActive}
-                        style={{
-                            width: '100%',
-                            marginTop: '10px',
-                            padding: '10px',
-                            backgroundColor: (!lastXray || beamActive) ? '#ddd' : '#444',
-                            color: (!lastXray || beamActive) ? '#999' : 'white',
-                            border: 'none',
-                            borderRadius: '8px',
-                            fontWeight: 'bold',
-                            cursor: (!lastXray || beamActive) ? 'not-allowed' : 'pointer',
-                            transition: 'all 0.2s'
-                        }}>
-                        DOWNLOAD X-RAY
-                    </button>
-                </div>
-            </div>
+            <ControllerPanel
+                controls={controls}
+                setControls={setControls}
+                onExpose={handleTakeXray}
+                onSave={handleDownloadXray}
+                beamActive={beamActive}
+            />
 
             <style>{`
           @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
