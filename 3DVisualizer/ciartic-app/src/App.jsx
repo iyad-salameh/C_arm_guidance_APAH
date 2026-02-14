@@ -873,6 +873,29 @@ const App = () => {
             }
         );
 
+        // Warning Sign on North wall (inside, Left side)
+        const textureLoader3 = new THREE.TextureLoader();
+        textureLoader3.load(
+            '/warningXray.png',
+            (texture) => {
+                const warnMaterial = new THREE.MeshStandardMaterial({
+                    map: texture,
+                    transparent: true,
+                    roughness: 0.5
+                });
+
+                // Sign facing inward
+                const warnPlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), warnMaterial);
+                warnPlane.position.set(-4, 2, 7.48); // Positioned to the far left
+                warnPlane.rotation.y = Math.PI; // Face inward
+                scene.add(warnPlane);
+            },
+            undefined,
+            (error) => {
+                console.warn('Warning sign texture not found.');
+            }
+        );
+
 
 
 
@@ -970,8 +993,10 @@ const App = () => {
         Promise.all([
             loadModel(PATIENT_URL),
             loadModel(CARM_URL),
-            loadModel(realsense_URL)
-        ]).then(([patientGltf, carmGltf, rsGltf]) => {
+            loadModel(realsense_URL),
+            loadModel('/fire_extinguisher/scene.gltf'),
+            loadModel('/first_aid_box/scene.gltf')
+        ]).then(([patientGltf, carmGltf, rsGltf, fireGltf, aidGltf]) => {
             if (!mounted) return;
 
             // 1. Patient
@@ -1039,10 +1064,46 @@ const App = () => {
 
             rsModel.updateMatrixWorld(true);
 
+            rsModel.updateMatrixWorld(true);
+
             rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
 
             // Store realsense model reference
             realsenseModelRef.current = rsModel;
+
+            // 4. Fire Extinguisher
+            const fireModel = fireGltf.scene;
+            const fireBox = new THREE.Box3().setFromObject(fireModel);
+            const fireSize = new THREE.Vector3();
+            fireBox.getSize(fireSize);
+            const maxDimF = Math.max(fireSize.x, fireSize.y, fireSize.z);
+            if (maxDimF > 0) {
+                const scale = 0.5 / maxDimF; // 50cm tall approx
+                fireModel.scale.set(scale, scale, scale);
+            }
+            // Reposition below First Aid Box (X=2, Y=1.5)
+            // 0.3m gap below box (Box Bottom ~1.3m). Top of Extinguisher at 1.0m. Center ~0.75m.
+            // Let's put it at Y=1.0 for visual balance and "0.3m away" feel
+            fireModel.position.set(2, 1.0, 7.4);
+            fireModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+            scene.add(fireModel);
+
+            // 5. First Aid Box
+            const aidModel = aidGltf.scene;
+            const aidBox = new THREE.Box3().setFromObject(aidModel);
+            const aidSize = new THREE.Vector3();
+            aidBox.getSize(aidSize);
+            const maxDimA = Math.max(aidSize.x, aidSize.y, aidSize.z);
+            if (maxDimA > 0) {
+                const scale = 0.4 / maxDimA; // 40cm box
+                aidModel.scale.set(scale, scale, scale);
+            }
+            // Midpoint between QSTSS (X=4) and MOEHE (X=0) -> X=2
+            // Height Y=1.5 (Middle of wall area), Z=7.4
+            aidModel.position.set(2, 1.5, 7.4);
+            aidModel.rotation.y = Math.PI; // Face room
+            aidModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+            scene.add(aidModel);
 
             setModelLoading(false);
         }).catch(err => {
