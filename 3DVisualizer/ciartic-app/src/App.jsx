@@ -71,7 +71,6 @@ const CONTROL_SPECS = {
 };
 
 // --- ANATOMY ZONE HELPER (single source of truth) ---
-// --- ANATOMY ZONE HELPER (single source of truth) ---
 const ZONE_DEFS = {
     miss: { key: 'miss', label: 'MISS (OFF PATIENT)' },
 
@@ -98,7 +97,6 @@ const ZONE_DEFS = {
 // Axis Mapping Config (Swap if your GLB is rotated)
 const ANATOMY_AXES = { up: 'y', leftRight: 'x', frontBack: 'z' };
 
-// --- ROBUST ZONE CLASSIFIER HELPERS ---
 
 // --- ROBUST ZONE CLASSIFIER HELPERS (SKELETON-BASED) ---
 
@@ -349,6 +347,27 @@ const App = () => {
     const srcAnchorRef = useRef(new THREE.Group());
     const detAnchorRef = useRef(new THREE.Group());
     const skeletonDebugRef = useRef(null); // Skeleton Debug Group
+
+    // Depth Viewer Refs
+    const realsenseModelRef = useRef(null);
+    const depthCameraRef = useRef(null);
+    const depthCameraHelperRef = useRef(null); // Helper for debugging
+    const depthRenderTargetRef = useRef(null);
+    const depthCanvasRef = useRef(null);
+    const rendererRef = useRef(null); // For reading pixels
+
+    // Camera Control State
+    const [camOffset, setCamOffset] = useState({ x: 0, y: -0.5, z: 0 });
+    const [camRot, setCamRot] = useState({ x: 0, y: 0, z: 0 });
+
+    // Refs for animation loop access
+    const camOffsetRef = useRef(camOffset);
+    const camRotRef = useRef(camRot);
+
+    useEffect(() => {
+        camOffsetRef.current = camOffset;
+        camRotRef.current = camRot;
+    }, [camOffset, camRot]);
 
     // Debug Refs
 
@@ -673,6 +692,7 @@ const App = () => {
         camera.position.set(0, 1.6, 2.5); // Standing height, 2m from patient's feet
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        rendererRef.current = renderer;
         renderer.setSize(width, height);
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -991,6 +1011,9 @@ const App = () => {
 
             rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
 
+            // Store realsense model reference
+            realsenseModelRef.current = rsModel;
+
             setModelLoading(false);
         }).catch(err => {
             console.error("Model Load Error", err);
@@ -1137,6 +1160,20 @@ const App = () => {
         // Attach to scene root to avoid parent transform issues (we will position/orient in world space)
         scene.add(beam);
         beamRef.current = beam;
+
+        // --- DEPTH RENDERING SETUP ---
+        const depthRenderTarget = new THREE.WebGLRenderTarget(256, 256);
+        depthRenderTarget.depthTexture = new THREE.DepthTexture(256, 256);
+        depthRenderTarget.depthTexture.type = THREE.UnsignedShortType;
+        depthRenderTargetRef.current = depthRenderTarget;
+
+        const depthCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 10);
+        depthCameraRef.current = depthCamera;
+
+        // DEBUG: Add CameraHelper to visualize orientation
+        const helper = new THREE.CameraHelper(depthCamera);
+        scene.add(helper);
+        depthCameraHelperRef.current = helper;
 
         // Vectors (Allocated ONCE)
         const v1 = new THREE.Vector3();
@@ -1423,6 +1460,56 @@ const App = () => {
                     }
                 } // End physics loop
 
+                // --- DEPTH RENDERING ---
+                // --- DEPTH RENDERING (DEBUG MODE: MANUAL CONTROL) ---
+                if (detAnchorRef.current && srcAnchorRef.current && depthCameraRef.current && depthRenderTargetRef.current) {
+                    detAnchorRef.current.updateMatrixWorld(true);
+                    srcAnchorRef.current.updateMatrixWorld(true);
+
+                    // Base position: Detector
+                    detAnchorRef.current.getWorldPosition(v1); // Detector pos
+                    srcAnchorRef.current.getWorldPosition(v2); // Source pos
+
+                    // Calculate Beam Direction (Detector -> Source)
+                    dir.subVectors(v2, v1).normalize();
+
+                    // Apply Manual Offsets relative to Beam Frame? No, simplified: World Offsets + Beam Axis
+                    // Let's use the UI offsets directly in World Space relative to Detector
+                    // EXCEPT Y is along the beam?
+                    // User wants "move around". Let's give World Space offsets relative to Detector.
+
+                    if (camOffsetRef.current) {
+                        // 1. Reset to Detector Position & Orientation
+                        detAnchorRef.current.getWorldPosition(depthCameraRef.current.position);
+                        detAnchorRef.current.getWorldQuaternion(depthCameraRef.current.quaternion);
+
+                        // 2. Apply Local Offsets (Relative to Detector)
+                        depthCameraRef.current.translateX(camOffsetRef.current.x);
+                        depthCameraRef.current.translateY(camOffsetRef.current.y);
+                        depthCameraRef.current.translateZ(camOffsetRef.current.z);
+                    }
+
+                    // 3. Apply Local Rotation (Relative to Detector)
+                    if (camRotRef.current) {
+                        depthCameraRef.current.rotateX(camRotRef.current.x * Math.PI / 180);
+                        depthCameraRef.current.rotateY(camRotRef.current.y * Math.PI / 180);
+                        depthCameraRef.current.rotateZ(camRotRef.current.z * Math.PI / 180);
+                    }
+
+                    depthCameraRef.current.updateMatrixWorld(true);
+
+                    renderer.setRenderTarget(depthRenderTargetRef.current);
+                    renderer.render(scene, depthCameraRef.current);
+                    renderer.setRenderTarget(null);
+
+                    // Update debug helper
+                    if (depthCameraHelperRef.current) {
+                        depthCameraHelperRef.current.update();
+                    }
+                }
+
+
+
                 renderer.render(scene, camera);
 
             } catch (err) {
@@ -1449,6 +1536,17 @@ const App = () => {
 
             renderer.dispose();
             orbit.dispose();
+
+            if (depthRenderTargetRef.current) {
+                depthRenderTargetRef.current.dispose();
+            }
+
+            if (depthCameraHelperRef.current) {
+                // Remove helper from wherever it might be attached (scene root)
+                if (depthCameraHelperRef.current.parent) {
+                    depthCameraHelperRef.current.parent.remove(depthCameraHelperRef.current);
+                }
+            }
 
             // Dispose scene resources
             scene.traverse((object) => {
@@ -1482,8 +1580,51 @@ const App = () => {
         beamActiveRef.current = beamActive;
     }, [beamActive]);
 
+    // Depth canvas update effect
+    useEffect(() => {
+        if (!depthCanvasRef.current) return;
+
+        const canvas = depthCanvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Buffer for reading pixels
+        const pixelBuffer = new Uint8Array(256 * 256 * 4);
+
+        let animId;
+        const updateDepthCanvas = () => {
+            if (depthRenderTargetRef.current && rendererRef.current) {
+                // Read pixels from the render target (DEBUG: READ COLOR)
+                rendererRef.current.readRenderTargetPixels(
+                    depthRenderTargetRef.current,
+                    0, 0, 256, 256,
+                    pixelBuffer
+                );
+
+                // Put pixels on canvas
+                const imageData = ctx.createImageData(256, 256);
+                const data = imageData.data;
+
+                // Copy buffer to imageData (need to flip Y usually, but for debug direct copy is fine)
+                for (let i = 0; i < pixelBuffer.length; i++) {
+                    data[i] = pixelBuffer[i];
+                }
+
+                ctx.putImageData(imageData, 0, 0);
+            }
+
+            animId = requestAnimationFrame(updateDepthCanvas);
+        };
+        updateDepthCanvas();
+
+        return () => {
+            if (animId) cancelAnimationFrame(animId);
+        };
+    }, []);
+
     const containerStyle = { position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#eef2f5', fontFamily: 'sans-serif', color: '#333' };
     const xrayStyle = { position: 'absolute', top: '20px', left: '20px', width: '200px', height: '220px', backgroundColor: '#000', borderRadius: '8px', border: '2px solid #333', display: 'flex', flexDirection: 'column', overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.3)', color: '#fff' };
+    const depthViewerStyle = { position: 'absolute', top: '260px', left: '20px', width: '200px', height: '200px', backgroundColor: '#000', borderRadius: '8px', border: '2px solid #333', display: 'flex', flexDirection: 'column', overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.3)', color: '#fff' };
 
     return (
         <div style={containerStyle}>
@@ -1570,6 +1711,21 @@ const App = () => {
                 </button>
             </div>
 
+            {/* Depth Viewer */}
+            <div style={depthViewerStyle}>
+                <div style={{ backgroundColor: '#111', borderBottom: '1px solid #333', padding: '5px 10px', fontSize: '9px', fontWeight: 'bold', color: '#aaa' }}>
+                    DEPTH VIEW - X-RAY SOURCE
+                </div>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#111' }}>
+                    <canvas
+                        ref={depthCanvasRef}
+                        width={256}
+                        height={256}
+                        style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    />
+                </div>
+            </div>
+
             <ControllerPanel
                 controls={controls}
                 setControls={setControls}
@@ -1581,6 +1737,30 @@ const App = () => {
             <style>{`
           @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
       `}</style>
+            {/* Manual Camera Controls */}
+            <div style={{ position: 'absolute', bottom: '10px', left: '10px', backgroundColor: 'rgba(0,0,0,0.8)', padding: '10px', borderRadius: '5px', color: 'white', fontSize: '10px', width: '200px' }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>CAMERA CONTROLS</div>
+
+                <div style={{ marginBottom: '5px' }}>Pos X: {camOffset.x.toFixed(2)}</div>
+                <input type="range" min="-2" max="2" step="0.1" value={camOffset.x} onChange={(e) => setCamOffset({ ...camOffset, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                <div style={{ marginBottom: '5px' }}>Pos Y: {camOffset.y.toFixed(2)}</div>
+                <input type="range" min="-2" max="2" step="0.1" value={camOffset.y} onChange={(e) => setCamOffset({ ...camOffset, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                <div style={{ marginBottom: '5px' }}>Pos Z: {camOffset.z.toFixed(2)}</div>
+                <input type="range" min="-2" max="2" step="0.1" value={camOffset.z} onChange={(e) => setCamOffset({ ...camOffset, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                <div style={{ borderTop: '1px solid #444', margin: '5px 0' }}></div>
+
+                <div style={{ marginBottom: '5px' }}>Rot X: {camRot.x}°</div>
+                <input type="range" min="-180" max="180" step="1" value={camRot.x} onChange={(e) => setCamRot({ ...camRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                <div style={{ marginBottom: '5px' }}>Rot Y: {camRot.y}°</div>
+                <input type="range" min="-180" max="180" step="1" value={camRot.y} onChange={(e) => setCamRot({ ...camRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                <div style={{ marginBottom: '5px' }}>Rot Z: {camRot.z}°</div>
+                <input type="range" min="-180" max="180" step="1" value={camRot.z} onChange={(e) => setCamRot({ ...camRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+            </div>
         </div>
     );
 };
