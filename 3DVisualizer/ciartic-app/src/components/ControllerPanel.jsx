@@ -241,22 +241,22 @@ const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }
                 {/* Orbital (Purple) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Orbital</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', -0.005)}>↻</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', 0.005)}>↺</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', -0.006)}>↻</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', 0.006)}>↺</button>
                 </div>
 
                 {/* Wig-Wag (Yellow/Blue) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Wig-Wag</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themeYellow }} {...bindBtn('wig_wag', 0.005)}>Y+</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeBlue }}   {...bindBtn('wig_wag', -0.005)}>Y-</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeYellow }} {...bindBtn('wig_wag', 0.006)}>Y+</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeBlue }}   {...bindBtn('wig_wag', -0.006)}>Y-</button>
                 </div>
 
                 {/* Lift (Orange) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Lift</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', 0.002)}>⬆</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', -0.002)}>⬇</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', 0.0024)}>⬆</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', -0.0024)}>⬇</button>
                 </div>
             </div>
 
