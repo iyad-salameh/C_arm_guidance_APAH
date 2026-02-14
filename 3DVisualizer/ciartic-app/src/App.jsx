@@ -851,8 +851,20 @@ const App = () => {
             }
             rsModel.rotation.set(Math.PI / 2, 0, -Math.PI / 2);
             rsModel.position.set(-0.22, 2.16, 0.0);
+
+            // Add to scene first to establish world transform
+            scene.add(rsModel);
+            rsModel.updateMatrixWorld(true);
+
+            // Re-parent to C-Arm Slide (Orbital) while keeping world transform
+            if (cArmSlideRef.current) {
+                cArmSlideRef.current.updateMatrixWorld(true);
+                cArmSlideRef.current.attach(rsModel);
+            } else {
+                bedGroup.add(rsModel); // Fallback
+            }
+
             rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-            bedGroup.add(rsModel);
 
             setModelLoading(false);
         }).catch(err => {
