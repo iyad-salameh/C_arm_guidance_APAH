@@ -593,7 +593,8 @@ const App = () => {
         <rect width="100" height="100" fill="#050505" />
         
         <!-- Generated Anatomy Content -->
-        <g transform="rotate(${-wig_wag * 20}, 50, 50)">
+        <!-- Rotated 270 per user request -->
+        <g transform="rotate(${-wig_wag * 20 + 270}, 50, 50)">
             ${svgContent}
         </g>
 
@@ -741,7 +742,7 @@ const App = () => {
             metalness: 0.1
         });
 
-        const floor = new THREE.Mesh(new THREE.PlaneGeometry(15, 15), floorMaterial);
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(15, 10), floorMaterial);
         floor.rotation.x = -Math.PI / 2;
         floor.receiveShadow = true;
         scene.add(floor);
@@ -752,26 +753,26 @@ const App = () => {
 
         // North wall (positive Z)
         const wallNorth = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
-        wallNorth.position.set(0, wallHeight / 2, 7.5);
+        wallNorth.position.set(0, wallHeight / 2, 5.0);
         wallNorth.receiveShadow = true;
         scene.add(wallNorth);
 
         // South wall (negative Z)
         const wallSouth = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
-        wallSouth.position.set(0, wallHeight / 2, -7.5);
+        wallSouth.position.set(0, wallHeight / 2, -5.0);
         wallSouth.rotation.y = Math.PI;
         wallSouth.receiveShadow = true;
         scene.add(wallSouth);
 
         // East wall (positive X)
-        const wallEast = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
+        const wallEast = new THREE.Mesh(new THREE.PlaneGeometry(10, wallHeight), wallMaterial);
         wallEast.position.set(7.5, wallHeight / 2, 0);
         wallEast.rotation.y = -Math.PI / 2;
         wallEast.receiveShadow = true;
         scene.add(wallEast);
 
         // West wall (negative X)
-        const wallWest = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
+        const wallWest = new THREE.Mesh(new THREE.PlaneGeometry(10, wallHeight), wallMaterial);
         wallWest.position.set(-7.5, wallHeight / 2, 0);
         wallWest.rotation.y = Math.PI / 2;
         wallWest.receiveShadow = true;
@@ -784,23 +785,23 @@ const App = () => {
 
         // Stripe on North wall
         const stripeNorth = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
-        stripeNorth.position.set(0, stripeY, 7.51);
+        stripeNorth.position.set(0, stripeY, 5.02);
         scene.add(stripeNorth);
 
         // Stripe on South wall
         const stripeSouth = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
-        stripeSouth.position.set(0, stripeY, -7.51);
+        stripeSouth.position.set(0, stripeY, -5.02);
         stripeSouth.rotation.y = Math.PI;
         scene.add(stripeSouth);
 
         // Stripe on East wall
-        const stripeEast = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
+        const stripeEast = new THREE.Mesh(new THREE.PlaneGeometry(10, stripeHeight), stripeMaterial);
         stripeEast.position.set(7.51, stripeY, 0);
         stripeEast.rotation.y = -Math.PI / 2;
         scene.add(stripeEast);
 
         // Stripe on West wall
-        const stripeWest = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
+        const stripeWest = new THREE.Mesh(new THREE.PlaneGeometry(10, stripeHeight), stripeMaterial);
         stripeWest.position.set(-7.51, stripeY, 0);
         stripeWest.rotation.y = Math.PI / 2;
         scene.add(stripeWest);
@@ -812,7 +813,7 @@ const App = () => {
 
         // Sign on North wall
         const signNorth = new THREE.Mesh(new THREE.PlaneGeometry(signWidth, signHeight), signMaterial);
-        signNorth.position.set(-5, 2.2, 7.52);
+        signNorth.position.set(-5, 2.2, 5.02);
         scene.add(signNorth);
 
 
@@ -835,12 +836,12 @@ const App = () => {
 
                 // Logo facing outward (outside of room)
                 const logoPlaneOut = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), logoMaterial);
-                logoPlaneOut.position.set(4, 2, 7.52);
+                logoPlaneOut.position.set(4, 2, 5.04);
                 scene.add(logoPlaneOut);
 
                 // Logo facing inward (inside of room)
                 const logoPlaneIn = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), logoMaterial.clone());
-                logoPlaneIn.position.set(4, 2, 7.48);
+                logoPlaneIn.position.set(4, 2, 4.98);
                 logoPlaneIn.rotation.y = Math.PI; // Rotate 180 degrees to face inward
                 scene.add(logoPlaneIn);
             },
@@ -863,7 +864,7 @@ const App = () => {
 
                 // Logo facing inward (inside of room)
                 const moehePlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), moeheMaterial);
-                moehePlane.position.set(0, 2, 7.48); // Positioned to the left of QSTSS logo
+                moehePlane.position.set(0, 2, 4.98); // Positioned to the left of QSTSS logo
                 moehePlane.rotation.y = Math.PI; // Rotate 180 degrees to face inward
                 scene.add(moehePlane);
             },
@@ -886,13 +887,37 @@ const App = () => {
 
                 // Sign facing inward
                 const warnPlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), warnMaterial);
-                warnPlane.position.set(-4, 2, 7.48); // Positioned to the far left
+                warnPlane.position.set(-4.5, 2, 4.98); // Positioned to the far left (Shifted 0.5m West)
                 warnPlane.rotation.y = Math.PI; // Face inward
                 scene.add(warnPlane);
             },
             undefined,
             (error) => {
                 console.warn('Warning sign texture not found.');
+            }
+        );
+
+        // Favicon above First Aid Box
+        const textureLoader4 = new THREE.TextureLoader();
+        textureLoader4.load(
+            '/favicon.png',
+            (texture) => {
+                const favMaterial = new THREE.MeshStandardMaterial({
+                    map: texture,
+                    transparent: true,
+                    roughness: 0.5
+                });
+
+                // Above First Aid Box (X=2, Y=1.5). Box Top ~1.7.
+                // Place at Y=2.3 (Shifted 30cm up from 2.0)
+                const favPlane = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), favMaterial);
+                favPlane.position.set(2, 2.3, 4.98);
+                favPlane.rotation.y = Math.PI; // Face inward
+                scene.add(favPlane);
+            },
+            undefined,
+            (error) => {
+                console.warn('Favicon texture not found.');
             }
         );
 
@@ -995,8 +1020,9 @@ const App = () => {
             loadModel(CARM_URL),
             loadModel(realsense_URL),
             loadModel('/fire_extinguisher/scene.gltf'),
-            loadModel('/first_aid_box/scene.gltf')
-        ]).then(([patientGltf, carmGltf, rsGltf, fireGltf, aidGltf]) => {
+            loadModel('/first_aid_box/scene.gltf'),
+            loadModel('/female_human_skeleton_-_zbrush_-_anatomy_study/scene.gltf')
+        ]).then(([patientGltf, carmGltf, rsGltf, fireGltf, aidGltf, femSkelGltf]) => {
             if (!mounted) return;
 
             // 1. Patient
@@ -1084,7 +1110,7 @@ const App = () => {
             // Reposition below First Aid Box (X=2, Y=1.5)
             // 0.3m gap below box (Box Bottom ~1.3m). Top of Extinguisher at 1.0m. Center ~0.75m.
             // Let's put it at Y=1.0 for visual balance and "0.3m away" feel
-            fireModel.position.set(2, 1.0, 7.4);
+            fireModel.position.set(2, 1.0, 4.95);
             fireModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
             scene.add(fireModel);
 
@@ -1099,11 +1125,28 @@ const App = () => {
                 aidModel.scale.set(scale, scale, scale);
             }
             // Midpoint between QSTSS (X=4) and MOEHE (X=0) -> X=2
-            // Height Y=1.5 (Middle of wall area), Z=7.4
-            aidModel.position.set(2, 1.5, 7.4);
+            // Height Y=1.5 (Middle of wall area), Z=10m room
+            aidModel.position.set(2, 1.5, 4.95);
             aidModel.rotation.y = Math.PI; // Face room
             aidModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
             scene.add(aidModel);
+
+            // 6. Female Skeleton
+            const skelModel = femSkelGltf.scene;
+            const skelBox = new THREE.Box3().setFromObject(skelModel);
+            const skelSize = new THREE.Vector3();
+            skelBox.getSize(skelSize);
+            const maxDimS = skelSize.y; // Height is main dimension
+            if (maxDimS > 0) {
+                const scale = 1.7 / maxDimS; // 1.7m tall
+                skelModel.scale.set(scale, scale, scale);
+            }
+            // Midpoint between First Aid (X=2) and MOEHE (X=0) -> X=1
+            // Moved Up 1m (Y=1) and Left 3.5m (X = 1 - 3.5 = -2.5)
+            skelModel.position.set(-2.5, 1.0, 4.95);
+            skelModel.rotation.y = Math.PI; // Face room
+            skelModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+            scene.add(skelModel);
 
             setModelLoading(false);
         }).catch(err => {
@@ -1992,6 +2035,60 @@ const App = () => {
                     )}
                 </div>
             )}
+
+            {/* Keyboard Legend - Glassmorphism Style */}
+            <div style={{
+                position: 'absolute',
+                bottom: '20px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                display: 'flex',
+                gap: '20px',
+                padding: '12px 24px',
+                background: 'rgba(255, 255, 255, 0.1)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                borderRadius: '16px',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+                color: '#fff',
+                fontSize: '13px',
+                fontWeight: '500',
+                pointerEvents: 'none',
+                zIndex: 1000
+            }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <kbd style={{
+                        padding: '4px 8px',
+                        background: 'rgba(255, 255, 255, 0.2)',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(255, 255, 255, 0.3)',
+                        fontFamily: 'monospace',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+                    }}>L</kbd>
+                    <span style={{ opacity: 0.9 }}>Toggle Landmarks</span>
+                </div>
+                <div style={{
+                    width: '1px',
+                    background: 'rgba(255, 255, 255, 0.2)',
+                    margin: '0 4px'
+                }}></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <kbd style={{
+                        padding: '4px 8px',
+                        background: 'rgba(255, 255, 255, 0.2)',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(255, 255, 255, 0.3)',
+                        fontFamily: 'monospace',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+                    }}>D</kbd>
+                    <span style={{ opacity: 0.9 }}>Toggle Debug</span>
+                </div>
+            </div>
         </div>
     );
 };

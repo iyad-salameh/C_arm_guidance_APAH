@@ -1,0 +1,11 @@
+Model Information:
+* title:	Female Human Skeleton - ZBrush - Anatomy Study
+* source:	https://sketchfab.com/3d-models/female-human-skeleton-zbrush-anatomy-study-5f28b52cab3e439490727e0aede55a6b
+* author:	Ruslan Gadzhiev (https://sketchfab.com/ruslangadzhiev)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Female Human Skeleton - ZBrush - Anatomy Study" (https://sketchfab.com/3d-models/female-human-skeleton-zbrush-anatomy-study-5f28b52cab3e439490727e0aede55a6b) by Ruslan Gadzhiev (https://sketchfab.com/ruslangadzhiev) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
