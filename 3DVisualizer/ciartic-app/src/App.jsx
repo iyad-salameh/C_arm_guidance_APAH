@@ -305,12 +305,12 @@ const App = () => {
     const mountRef = useRef(null);
 
     const [controls, setControls] = useState({
-        lift: -0.3,
+        lift: -0.178,
         column_rot: 0,
         wig_wag: 0,
         orbital_slide: 0,
-        cart_x: 1.7, // Longitudinal
-        cart_z: 0.0, // Lateral (New)
+        cart_x: 1.700, // Longitudinal
+        cart_z: 0.600, // Lateral (New)
     });
     const [beamActive, setBeamActive] = useState(false);
     const [lastXray, setLastXray] = useState(null);
@@ -354,20 +354,34 @@ const App = () => {
     const depthCameraHelperRef = useRef(null); // Helper for debugging
     const depthRenderTargetRef = useRef(null);
     const depthCanvasRef = useRef(null);
-    const rendererRef = useRef(null); // For reading pixels
+    const rendererRef = useRef(null);
+    const depthVizSceneRef = useRef(null);
+    const depthVizQuadRef = useRef(null);
+    const depthVizTargetRef = useRef(null);
 
-    // Camera Control State
-    const [camOffset, setCamOffset] = useState({ x: 0, y: -0.5, z: 0 });
-    const [camRot, setCamRot] = useState({ x: 0, y: 0, z: 0 });
+    // Camera Control State (Restored)
+    const [controlTarget, setControlTarget] = useState('camera'); // 'camera' or 'realsense'
+
+    // Camera State
+    const [camOffset, setCamOffset] = useState({ x: 0.00, y: -0.06, z: 0.00 });
+    const [camRot, setCamRot] = useState({ x: 89, y: 0, z: 180 });
+
+    // RealSense State (Defaulted to current fixed values)
+    const [rsOffset, setRsOffset] = useState({ x: 0.00, y: 0.67, z: 0.23 });
+    const [rsRot, setRsRot] = useState({ x: 90, y: 0, z: 180 });
 
     // Refs for animation loop access
     const camOffsetRef = useRef(camOffset);
     const camRotRef = useRef(camRot);
+    const rsOffsetRef = useRef(rsOffset);
+    const rsRotRef = useRef(rsRot);
 
     useEffect(() => {
         camOffsetRef.current = camOffset;
         camRotRef.current = camRot;
-    }, [camOffset, camRot]);
+        rsOffsetRef.current = rsOffset;
+        rsRotRef.current = rsRot;
+    }, [camOffset, camRot, rsOffset, rsRot]);
 
     // Debug Refs
 
@@ -687,6 +701,7 @@ const App = () => {
         const height = mountRef.current.clientHeight;
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0xeef2f5);
+        let mounted = true; // Prevents race conditions / strict mode dual load
 
         const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
         camera.position.set(0, 1.6, 2.5); // Standing height, 2m from patient's feet
@@ -945,6 +960,8 @@ const App = () => {
             loadModel(CARM_URL),
             loadModel(realsense_URL)
         ]).then(([patientGltf, carmGltf, rsGltf]) => {
+            if (!mounted) return;
+
             // 1. Patient
             const patientModel = patientGltf.scene;
             // Capture Local Bounds (before transform)
@@ -994,20 +1011,21 @@ const App = () => {
             } else {
                 rsModel.scale.set(0.15, 0.15, 0.15);
             }
-            rsModel.rotation.set(Math.PI / 2, 0, -Math.PI / 2);
-            rsModel.position.set(-0.22, 2.16, 0.0);
 
-            // Add to scene first to establish world transform
-            scene.add(rsModel);
-            rsModel.updateMatrixWorld(true);
-
-            // Re-parent to C-Arm Slide (Orbital) while keeping world transform
+            // Attach directly to C-Arm Slide (Orbital Frame) so it moves with it
+            // Local Position on the Arc (Near Detector)
+            // Detector is at Y ~= 0.8 (cRadius). 
+            // We place Camera slightly offset.
             if (cArmSlideRef.current) {
-                cArmSlideRef.current.updateMatrixWorld(true);
-                cArmSlideRef.current.attach(rsModel);
+                cArmSlideRef.current.add(rsModel);
+                // Local Coords relative to C-Slide center
+                rsModel.position.set(0.1, 0.95, 0.0);
+                rsModel.rotation.set(Math.PI / 2, 0, Math.PI);
             } else {
-                bedGroup.add(rsModel); // Fallback
+                scene.add(rsModel); // Fallback
             }
+
+            rsModel.updateMatrixWorld(true);
 
             rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
 
@@ -1016,6 +1034,7 @@ const App = () => {
 
             setModelLoading(false);
         }).catch(err => {
+            if (!mounted) return;
             console.error("Model Load Error", err);
             setModelLoading(false);
         });
@@ -1162,12 +1181,73 @@ const App = () => {
         beamRef.current = beam;
 
         // --- DEPTH RENDERING SETUP ---
-        const depthRenderTarget = new THREE.WebGLRenderTarget(256, 256);
-        depthRenderTarget.depthTexture = new THREE.DepthTexture(256, 256);
-        depthRenderTarget.depthTexture.type = THREE.UnsignedShortType;
+        // Depth Render Target (Depth Capture)
+        const depthRenderTarget = new THREE.WebGLRenderTarget(512, 512); // Higher res + scaling
+        depthRenderTarget.depthTexture = new THREE.DepthTexture();
+        depthRenderTarget.depthTexture.type = THREE.UnsignedShortType; // Standard depth
         depthRenderTargetRef.current = depthRenderTarget;
 
-        const depthCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 10);
+        // Depth Visualization Setup (Quad + Shader) to convert depth to grayscale
+        const depthVizScene = new THREE.Scene();
+        // Ortho camera for full screen quad
+        const depthVizCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        const depthVizMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                tDepth: { value: depthRenderTarget.depthTexture },
+                cameraNear: { value: 0.1 },
+                cameraFar: { value: 2.5 }
+            },
+            vertexShader: `
+                 varying vec2 vUv;
+                 void main() {
+                     vUv = uv;
+                     gl_Position = vec4(position, 1.0);
+                 }
+             `,
+            fragmentShader: `
+                 #include <packing>
+                 varying vec2 vUv;
+                 uniform sampler2D tDepth;
+                 uniform float cameraNear;
+                 uniform float cameraFar;
+
+                 float readDepth( sampler2D depthSampler, vec2 coord ) {
+                     float fragCoordZ = texture2D( depthSampler, coord ).x;
+                     float viewZ = perspectiveDepthToViewZ( fragCoordZ, cameraNear, cameraFar );
+                     return viewZToOrthographicDepth( viewZ, cameraNear, cameraFar );
+                 }
+                 
+                 void main() {
+                     // Get linearized depth (0 = near, 1 = far)
+                     float depth = readDepth( tDepth, vUv );
+                     
+                     // Invert so Near is White, Far is Black
+                     float val = 1.0 - depth; 
+                     
+                     // Increase Contrast using Power Curve
+                     // val is initially [0, 1]. pow(val, 3.0) pushes mid-tones darker.
+                     // Since we reduced Far to 2.5, patient (0.5m) is ~0.8.
+                     // 0.8^3 = 0.51.
+                     // Floor (1.5m) is ~0.4.
+                     // 0.4^3 = 0.06.
+                     // Contrast difference: 0.45. Huge!
+                     
+                     val = pow(val, 3.0);
+
+                     gl_FragColor = vec4( vec3( val ), 1.0 );
+                 }
+             `
+        });
+        const depthVizQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), depthVizMaterial);
+        depthVizScene.add(depthVizQuad);
+        depthVizSceneRef.current = depthVizScene;
+        depthVizQuadRef.current = depthVizQuad;
+
+        // Target to render the visualization into (RGBA)
+        const depthVizTarget = new THREE.WebGLRenderTarget(256, 256);
+        depthVizTargetRef.current = depthVizTarget;
+
+        const depthCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 2.5);
         depthCameraRef.current = depthCamera;
 
         // DEBUG: Add CameraHelper to visualize orientation
@@ -1478,22 +1558,46 @@ const App = () => {
                     // EXCEPT Y is along the beam?
                     // User wants "move around". Let's give World Space offsets relative to Detector.
 
-                    if (camOffsetRef.current) {
-                        // 1. Reset to Detector Position & Orientation
-                        detAnchorRef.current.getWorldPosition(depthCameraRef.current.position);
-                        detAnchorRef.current.getWorldQuaternion(depthCameraRef.current.quaternion);
+                    // 1. Reset to Detector Position & Orientation
+                    detAnchorRef.current.getWorldPosition(depthCameraRef.current.position);
+                    detAnchorRef.current.getWorldQuaternion(depthCameraRef.current.quaternion);
 
-                        // 2. Apply Local Offsets (Relative to Detector)
-                        depthCameraRef.current.translateX(camOffsetRef.current.x);
-                        depthCameraRef.current.translateY(camOffsetRef.current.y);
-                        depthCameraRef.current.translateZ(camOffsetRef.current.z);
+                    // 2. Apply Dynamic Offsets (Relative to Detector) for CAMERA
+                    const off = camOffsetRef.current;
+                    depthCameraRef.current.translateX(off.x);
+                    depthCameraRef.current.translateY(off.y);
+                    depthCameraRef.current.translateZ(off.z);
+
+                    // 3. Apply Dynamic Rotation for CAMERA
+                    const rot = camRotRef.current;
+                    depthCameraRef.current.rotateX(rot.x * Math.PI / 180);
+                    depthCameraRef.current.rotateY(rot.y * Math.PI / 180);
+                    depthCameraRef.current.rotateZ(rot.z * Math.PI / 180);
+
+                    // 4. Apply Dynamic Transforms for REALSENSE (If attached)
+                    if (realsenseModelRef.current) {
+                        const rsOff = rsOffsetRef.current;
+                        const rsR = rsRotRef.current;
+                        realsenseModelRef.current.position.set(rsOff.x, rsOff.y, rsOff.z);
+                        realsenseModelRef.current.rotation.set(
+                            rsR.x * Math.PI / 180,
+                            rsR.y * Math.PI / 180,
+                            rsR.z * Math.PI / 180
+                        );
                     }
 
-                    // 3. Apply Local Rotation (Relative to Detector)
-                    if (camRotRef.current) {
-                        depthCameraRef.current.rotateX(camRotRef.current.x * Math.PI / 180);
-                        depthCameraRef.current.rotateY(camRotRef.current.y * Math.PI / 180);
-                        depthCameraRef.current.rotateZ(camRotRef.current.z * Math.PI / 180);
+                    // --- RENDER PASS 1: CAPTURE DEPTH ---
+                    renderer.setRenderTarget(depthRenderTargetRef.current);
+                    // Clear mainly depth
+                    renderer.clear();
+                    renderer.render(scene, depthCameraRef.current);
+                    renderer.setRenderTarget(null);
+
+                    // --- RENDER PASS 2: VISUALIZE DEPTH TO TEXTURE ---
+                    if (depthVizSceneRef.current && depthVizTargetRef.current) {
+                        renderer.setRenderTarget(depthVizTargetRef.current);
+                        renderer.render(depthVizSceneRef.current, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)); // Use simple camera
+                        renderer.setRenderTarget(null);
                     }
 
                     depthCameraRef.current.updateMatrixWorld(true);
@@ -1503,8 +1607,12 @@ const App = () => {
                     renderer.setRenderTarget(null);
 
                     // Update debug helper
+                    // Update debug helper
                     if (depthCameraHelperRef.current) {
-                        depthCameraHelperRef.current.update();
+                        depthCameraHelperRef.current.visible = debugEnabledRef.current;
+                        if (debugEnabledRef.current) {
+                            depthCameraHelperRef.current.update();
+                        }
                     }
                 }
 
@@ -1530,6 +1638,7 @@ const App = () => {
         window.addEventListener('resize', handleResize);
 
         return () => {
+            mounted = false;
             cancelAnimationFrame(reqId);
             window.removeEventListener('resize', handleResize);
             if (mountRef.current) mountRef.current.innerHTML = '';
@@ -1593,10 +1702,10 @@ const App = () => {
 
         let animId;
         const updateDepthCanvas = () => {
-            if (depthRenderTargetRef.current && rendererRef.current) {
-                // Read pixels from the render target (DEBUG: READ COLOR)
+            if (depthVizTargetRef.current && rendererRef.current) {
+                // Read pixels from the VIZ target (Grayscale Depth)
                 rendererRef.current.readRenderTargetPixels(
-                    depthRenderTargetRef.current,
+                    depthVizTargetRef.current,
                     0, 0, 256, 256,
                     pixelBuffer
                 );
@@ -1734,33 +1843,82 @@ const App = () => {
                 beamActive={beamActive}
             />
 
-            <style>{`
-          @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
-      `}</style>
-            {/* Manual Camera Controls */}
-            <div style={{ position: 'absolute', bottom: '10px', left: '10px', backgroundColor: 'rgba(0,0,0,0.8)', padding: '10px', borderRadius: '5px', color: 'white', fontSize: '10px', width: '200px' }}>
-                <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>CAMERA CONTROLS</div>
 
-                <div style={{ marginBottom: '5px' }}>Pos X: {camOffset.x.toFixed(2)}</div>
-                <input type="range" min="-2" max="2" step="0.1" value={camOffset.x} onChange={(e) => setCamOffset({ ...camOffset, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+            {debugEnabled && (
+                <div style={{ position: 'absolute', bottom: '10px', left: '10px', backgroundColor: 'rgba(0,0,0,0.8)', padding: '10px', borderRadius: '5px', color: 'white', fontSize: '10px', width: '200px' }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>CONTROLS</span>
+                        <div style={{ display: 'flex', gap: '5px' }}>
+                            <button
+                                onClick={() => setControlTarget('camera')}
+                                style={{
+                                    padding: '2px 5px', fontSize: '9px', cursor: 'pointer', border: 'none', borderRadius: '3px',
+                                    backgroundColor: controlTarget === 'camera' ? '#0077ff' : '#444', color: 'white'
+                                }}>
+                                CAM
+                            </button>
+                            <button
+                                onClick={() => setControlTarget('realsense')}
+                                style={{
+                                    padding: '2px 5px', fontSize: '9px', cursor: 'pointer', border: 'none', borderRadius: '3px',
+                                    backgroundColor: controlTarget === 'realsense' ? '#0077ff' : '#444', color: 'white'
+                                }}>
+                                RS
+                            </button>
+                        </div>
+                    </div>
 
-                <div style={{ marginBottom: '5px' }}>Pos Y: {camOffset.y.toFixed(2)}</div>
-                <input type="range" min="-2" max="2" step="0.1" value={camOffset.y} onChange={(e) => setCamOffset({ ...camOffset, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                    <div style={{ marginBottom: '5px', color: '#aaa', fontSize: '9px', textAlign: 'center' }}>
+                        ADJUSTING: {controlTarget === 'camera' ? "DEPTH CAMERA" : "REALSENSE MODEL"}
+                    </div>
 
-                <div style={{ marginBottom: '5px' }}>Pos Z: {camOffset.z.toFixed(2)}</div>
-                <input type="range" min="-2" max="2" step="0.1" value={camOffset.z} onChange={(e) => setCamOffset({ ...camOffset, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                    {controlTarget === 'camera' ? (
+                        <>
+                            <div style={{ marginBottom: '5px' }}>Pos X: {camOffset.x.toFixed(2)}</div>
+                            <input type="range" min="-2" max="2" step="0.01" value={camOffset.x} onChange={(e) => setCamOffset({ ...camOffset, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                <div style={{ borderTop: '1px solid #444', margin: '5px 0' }}></div>
+                            <div style={{ marginBottom: '5px' }}>Pos Y: {camOffset.y.toFixed(2)}</div>
+                            <input type="range" min="-2" max="2" step="0.01" value={camOffset.y} onChange={(e) => setCamOffset({ ...camOffset, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                <div style={{ marginBottom: '5px' }}>Rot X: {camRot.x}°</div>
-                <input type="range" min="-180" max="180" step="1" value={camRot.x} onChange={(e) => setCamRot({ ...camRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>Pos Z: {camOffset.z.toFixed(2)}</div>
+                            <input type="range" min="-2" max="2" step="0.01" value={camOffset.z} onChange={(e) => setCamOffset({ ...camOffset, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                <div style={{ marginBottom: '5px' }}>Rot Y: {camRot.y}°</div>
-                <input type="range" min="-180" max="180" step="1" value={camRot.y} onChange={(e) => setCamRot({ ...camRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ borderTop: '1px solid #444', margin: '5px 0' }}></div>
 
-                <div style={{ marginBottom: '5px' }}>Rot Z: {camRot.z}°</div>
-                <input type="range" min="-180" max="180" step="1" value={camRot.z} onChange={(e) => setCamRot({ ...camRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
-            </div>
+                            <div style={{ marginBottom: '5px' }}>Rot X: {camRot.x}°</div>
+                            <input type="range" min="-180" max="180" step="1" value={camRot.x} onChange={(e) => setCamRot({ ...camRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ marginBottom: '5px' }}>Rot Y: {camRot.y}°</div>
+                            <input type="range" min="-180" max="180" step="1" value={camRot.y} onChange={(e) => setCamRot({ ...camRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ marginBottom: '5px' }}>Rot Z: {camRot.z}°</div>
+                            <input type="range" min="-180" max="180" step="1" value={camRot.z} onChange={(e) => setCamRot({ ...camRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                        </>
+                    ) : (
+                        <>
+                            <div style={{ marginBottom: '5px' }}>RS Pos X: {rsOffset.x.toFixed(2)}</div>
+                            <input type="range" min="-2" max="2" step="0.01" value={rsOffset.x} onChange={(e) => setRsOffset({ ...rsOffset, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ marginBottom: '5px' }}>RS Pos Y: {rsOffset.y.toFixed(2)}</div>
+                            <input type="range" min="-2" max="2" step="0.01" value={rsOffset.y} onChange={(e) => setRsOffset({ ...rsOffset, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ marginBottom: '5px' }}>RS Pos Z: {rsOffset.z.toFixed(2)}</div>
+                            <input type="range" min="-2" max="2" step="0.01" value={rsOffset.z} onChange={(e) => setRsOffset({ ...rsOffset, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ borderTop: '1px solid #444', margin: '5px 0' }}></div>
+
+                            <div style={{ marginBottom: '5px' }}>RS Rot X: {rsRot.x}°</div>
+                            <input type="range" min="-180" max="180" step="1" value={rsRot.x} onChange={(e) => setRsRot({ ...rsRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ marginBottom: '5px' }}>RS Rot Y: {rsRot.y}°</div>
+                            <input type="range" min="-180" max="180" step="1" value={rsRot.y} onChange={(e) => setRsRot({ ...rsRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+
+                            <div style={{ marginBottom: '5px' }}>RS Rot Z: {rsRot.z}°</div>
+                            <input type="range" min="-180" max="180" step="1" value={rsRot.z} onChange={(e) => setRsRot({ ...rsRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                        </>
+                    )}
+                </div>
+            )}
         </div>
     );
 };
