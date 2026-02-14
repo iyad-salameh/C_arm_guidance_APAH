@@ -670,7 +670,7 @@ const App = () => {
         scene.background = new THREE.Color(0xeef2f5);
 
         const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-        camera.position.set(3.5, 2.5, 3.5);
+        camera.position.set(0, 1.6, 2.5); // Standing height, 2m from patient's feet
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(width, height);
@@ -682,7 +682,7 @@ const App = () => {
 
         const orbit = new OrbitControls(camera, renderer.domElement);
         orbit.enableDamping = true;
-        orbit.target.set(0, 1.2, 0);
+        orbit.target.set(0, 1.0, 0.5); // Looking at patient's feet area
 
         const ambient = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambient);
@@ -694,15 +694,140 @@ const App = () => {
         scene.add(sun);
 
         // --- ENVIRONMENT ---
-        const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.MeshStandardMaterial({ color: 0xe0e6eb, roughness: 0.6 }));
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(15, 15), new THREE.MeshStandardMaterial({ color: 0xe0e6eb, roughness: 0.6 }));
         floor.rotation.x = -Math.PI / 2;
         floor.receiveShadow = true;
         scene.add(floor);
 
-        const wall = new THREE.Mesh(new THREE.PlaneGeometry(30, 15), new THREE.MeshStandardMaterial({ color: 0xf5f7fa }));
-        wall.position.set(0, 7.5, -6);
-        wall.receiveShadow = true;
-        scene.add(wall);
+        // Walls (15x15 room, 3m height)
+        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 0.8, side: THREE.DoubleSide });
+        const wallHeight = 3;
+
+        // North wall (positive Z)
+        const wallNorth = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
+        wallNorth.position.set(0, wallHeight / 2, 7.5);
+        wallNorth.receiveShadow = true;
+        scene.add(wallNorth);
+
+        // South wall (negative Z)
+        const wallSouth = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
+        wallSouth.position.set(0, wallHeight / 2, -7.5);
+        wallSouth.rotation.y = Math.PI;
+        wallSouth.receiveShadow = true;
+        scene.add(wallSouth);
+
+        // East wall (positive X)
+        const wallEast = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
+        wallEast.position.set(7.5, wallHeight / 2, 0);
+        wallEast.rotation.y = -Math.PI / 2;
+        wallEast.receiveShadow = true;
+        scene.add(wallEast);
+
+        // West wall (negative X)
+        const wallWest = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
+        wallWest.position.set(-7.5, wallHeight / 2, 0);
+        wallWest.rotation.y = Math.PI / 2;
+        wallWest.receiveShadow = true;
+        scene.add(wallWest);
+
+        // Wall Decorations - Horizontal Stripes
+        const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0xe8eef2, roughness: 0.7 });
+        const stripeHeight = 0.15;
+        const stripeY = 1.2;
+
+        // Stripe on North wall
+        const stripeNorth = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
+        stripeNorth.position.set(0, stripeY, 7.51);
+        scene.add(stripeNorth);
+
+        // Stripe on South wall
+        const stripeSouth = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
+        stripeSouth.position.set(0, stripeY, -7.51);
+        stripeSouth.rotation.y = Math.PI;
+        scene.add(stripeSouth);
+
+        // Stripe on East wall
+        const stripeEast = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
+        stripeEast.position.set(7.51, stripeY, 0);
+        stripeEast.rotation.y = -Math.PI / 2;
+        scene.add(stripeEast);
+
+        // Stripe on West wall
+        const stripeWest = new THREE.Mesh(new THREE.PlaneGeometry(15, stripeHeight), stripeMaterial);
+        stripeWest.position.set(-7.51, stripeY, 0);
+        stripeWest.rotation.y = Math.PI / 2;
+        scene.add(stripeWest);
+
+        // Medical Signage Placeholders (colored rectangles)
+        const signMaterial = new THREE.MeshStandardMaterial({ color: 0x4a90e2, roughness: 0.3 });
+        const signWidth = 0.8;
+        const signHeight = 0.6;
+
+        // Sign on North wall
+        const signNorth = new THREE.Mesh(new THREE.PlaneGeometry(signWidth, signHeight), signMaterial);
+        signNorth.position.set(-5, 2.2, 7.52);
+        scene.add(signNorth);
+
+
+        // Sign on East wall
+        const signEast = new THREE.Mesh(new THREE.PlaneGeometry(signWidth, signHeight), signMaterial);
+        signEast.position.set(7.52, 2.2, -5);
+        signEast.rotation.y = -Math.PI / 2;
+        scene.add(signEast);
+
+        // Logo on North wall
+        const textureLoader = new THREE.TextureLoader();
+        textureLoader.load(
+            '/qstssLogo.jpg',
+            (texture) => {
+                const logoMaterial = new THREE.MeshStandardMaterial({
+                    map: texture,
+                    transparent: true,
+                    roughness: 0.5
+                });
+
+                // Logo facing outward (outside of room)
+                const logoPlaneOut = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), logoMaterial);
+                logoPlaneOut.position.set(4, 2, 7.52);
+                scene.add(logoPlaneOut);
+
+                // Logo facing inward (inside of room)
+                const logoPlaneIn = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), logoMaterial.clone());
+                logoPlaneIn.position.set(4, 2, 7.48);
+                logoPlaneIn.rotation.y = Math.PI; // Rotate 180 degrees to face inward
+                scene.add(logoPlaneIn);
+            },
+            undefined,
+            (error) => {
+                console.warn('Logo texture not found. Please add logo.png to the public folder.');
+            }
+        );
+
+        // MOEHE Logo on North wall (inside, next to QSTSS logo)
+        const textureLoader2 = new THREE.TextureLoader();
+        textureLoader2.load(
+            '/MOEHElogo.jpg',
+            (texture) => {
+                const moeheMaterial = new THREE.MeshStandardMaterial({
+                    map: texture,
+                    transparent: true,
+                    roughness: 0.5
+                });
+
+                // Logo facing inward (inside of room)
+                const moehePlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), moeheMaterial);
+                moehePlane.position.set(0, 2, 7.48); // Positioned to the left of QSTSS logo
+                moehePlane.rotation.y = Math.PI; // Rotate 180 degrees to face inward
+                scene.add(moehePlane);
+            },
+            undefined,
+            (error) => {
+                console.warn('MOEHE logo texture not found.');
+            }
+        );
+
+
+
 
         // --- DEBUG MARKER ---
         const isoMarker = new THREE.Mesh(
