@@ -1,8 +1,8 @@
 **part1:**
 
-Autonomous Surgical C-arm GuidanceMulti-Modal Spatial Fusion of Synthetic Fluoroscopy and 3D Depth Sensing📌
+Autonomous Surgical C-arm GuidanceMulti-Modal Spatial Fusion of Synthetic Fluoroscopy and 3D Depth Sensing
 
-Project Overview
+📌Project Overview
 Manual positioning of C-arm fluoroscopy systems in orthopedic and spinal surgeries is a time-intensive process that leads to excessive radiation exposure and sub-optimal landmark alignment.
 
 This project addresses these challenges by fusing Deep Learning-based landmark regression with real-time 3D physical data.
