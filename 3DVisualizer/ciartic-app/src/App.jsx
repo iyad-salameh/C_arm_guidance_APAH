@@ -330,6 +330,17 @@ const App = () => {
     const beamActiveRef = useRef(false);
     const controlsRef = useRef(controls);
 
+    ////////////Arduino control/////////////////
+
+    // --- SERIAL (ARDUINO) ---
+    const serialPortRef = useRef(null);
+    const serialWriterRef = useRef(null);
+    const lastSentRef = useRef({ w: null, c: null, t: 0 });
+    const isArduinoConnectedRef = useRef(false);
+
+
+    ////////////End of Arduino Control//////////////////
+
     const beamRegionRef = useRef("WAITING FOR PATIENT..."); // Kept for label string
     const beamZoneKeyRef = useRef('miss'); // NEW: Store key
     const beamHitRef = useRef(false);
@@ -339,6 +350,27 @@ const App = () => {
 
     const patientModelRef = useRef(null);
     const patientBoundsRef = useRef({ ready: false, minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 });
+
+
+    ////Arduino code for sending functions////
+
+    const radToDeg = (r) => (r * 180) / Math.PI;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+    const sendServos = async (wigDeg, colDeg) => {
+        if (!serialWriterRef.current) return;
+
+        const msg = `W:${Math.round(wigDeg)} C:${Math.round(colDeg)}\n`;
+        const data = new TextEncoder().encode(msg);
+
+        try {
+            await serialWriterRef.current.write(data);
+        } catch (e) {
+            console.warn("Serial write failed", e);
+        }
+    };
+    ////end of arduino part for functions/////
+
 
     useEffect(() => { controlsRef.current = controls; }, [controls]);
 
@@ -394,302 +426,149 @@ const App = () => {
     const showLandmarksRef = useRef(false);
     const hasRenderedInitialRef = useRef(false);
 
-    // --- REAL X-RAY IMAGE PRELOADING ---
-    const LANDMARK_IMAGE_MAP = {
-        thorax: {
-            dir: '/xrays/chest/',
-            files: Array.from({ length: 15 }, (_, i) => `case-${1001 + i}.png`)
-        },
-        left_shoulder: {
-            dir: '/xrays/left_shoulder/',
-            files: Array.from({ length: 15 }, (_, i) => `case-${1016 + i}.png`)
-        },
-        right_shoulder: {
-            dir: '/xrays/right_shoulder/',
-            files: Array.from({ length: 15 }, (_, i) => `case-${1031 + i}.png`)
-        },
-        pelvis: {
-            dir: '/xrays/pelvis/',
-            files: Array.from({ length: 15 }, (_, i) => `case-${1046 + i}.png`)
-        }
-    };
+    // --- CONTINUOUS SKELETON ATLAS X-RAY ---
+    const skeletonAtlasRef = useRef(null);
+    const [atlasLoaded, setAtlasLoaded] = useState(false);
 
-    const xrayImagesRef = useRef({});
-    const [xrayImagesLoaded, setXrayImagesLoaded] = useState(false);
-
-    // Preload all landmark X-ray images on mount
+    // Preload the single skeleton atlas
     useEffect(() => {
-        const imageMap = {};
-        const promises = [];
-        for (const [zoneKey, config] of Object.entries(LANDMARK_IMAGE_MAP)) {
-            imageMap[zoneKey] = [];
-            config.files.forEach((filename) => {
-                const url = config.dir + filename;
-                const img = new Image();
-                const p = new Promise((resolve) => {
-                    img.onload = () => resolve();
-                    img.onerror = () => { console.warn(`Failed to load: ${url}`); resolve(); };
-                });
-                img.src = url;
-                imageMap[zoneKey].push({ url, img });
-                promises.push(p);
-            });
-        }
-        xrayImagesRef.current = imageMap;
-        Promise.all(promises).then(() => {
-            console.log('All landmark X-ray images preloaded.');
-            setXrayImagesLoaded(true);
-        });
+        const img = new Image();
+        img.crossOrigin = "Anonymous";
+        img.onload = () => {
+            skeletonAtlasRef.current = img;
+            setAtlasLoaded(true);
+            console.log("Skeleton atlas loaded", img.width, img.height);
+        };
+        img.onerror = (e) => console.error("Failed to load skeleton atlas", e);
+        img.src = '/xrays/skeleton.png';
     }, []);
 
 
-    // --- DYNAMIC ANATOMY GENERATOR ---
+    // --- DYNAMIC ANATOMY GENERATOR (ATLAS SKELETON) ---
     const generateRealisticXray = (currentControls = controls, zoneKeyOverride = null) => {
-        const { cart_x, orbital_slide, wig_wag } = currentControls;
+        const { cart_x, cart_z, orbital_slide, wig_wag } = currentControls;
 
-        // 1. Determine Anatomy Zone
-        let zone = ZONE_DEFS.miss; // Default
-
-        if (zoneKeyOverride) {
-            // New path: pass key directly
-            zone = ZONE_DEFS[zoneKeyOverride] || ZONE_DEFS.miss;
-        } else {
-            // Fallback to cart_x if no override (maintenance compatibility)
-            zone = getAnatomyZone(cart_x);
+        // If atlas isn't ready, fallback to noise
+        if (!skeletonAtlasRef.current) {
+            return generateNoiseXray("LOADING...");
         }
 
-        const anatomyType = zone.label;
+        const img = skeletonAtlasRef.current;
+        const canvas = document.createElement('canvas');
+        const size = 512; // Output resolution
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
 
-        // 2. Check if this zone has real X-ray images
-        const realImageZoneKey = zone.key;
-        const imageSet = xrayImagesRef.current[realImageZoneKey];
-        if (imageSet && imageSet.length > 0) {
-            // Select image based on orbital angle for variety
-            const orbitalDeg = (orbital_slide * 180 / Math.PI + 180) % 360;
-            const imageIndex = Math.floor(orbitalDeg / 360 * imageSet.length) % imageSet.length;
-            const selectedImage = imageSet[imageIndex];
+        // --- 1. MAPPING PHYSICS TO IMAGE COORDINATES ---
+        // Patient Head at cart_x ~ 0.8m, Feet at ~ 2.5m
+        // Image Top (Y=0) = Head, Image Bottom (Y=H) = Feet
+        // We need to invert cart_x logic: Low X = Head (Top), High X = Feet (Bottom)?
+        // No, in our scene:
+        // Cart X=0 is near head? Let's check `getAnatomyZone` logic:
+        // cart_x < 1.2 is Head. cart_x > 2.3 is Feet.
+        // So Low X = Head (Top of Image), High X = Feet (Bottom of Image).
 
-            // Update UI state with anatomy name
-            setCurrentAnatomy(anatomyType);
+        // Geometry / FOV Calculation
+        // Depth Camera (Perspective) is at Detector.
+        // Det Y (Base) = 1.70m. Iso Y = 1.45m. Dist = 0.25m.
+        // Lift moves Det Y. Dist = 0.25 + lift.
+        // FOV = 58 deg.
+        const lift = currentControls.lift || 0;
+        const distToIso = Math.max(0.1, 0.25 + lift); // Clamp min 10cm
+        // Visible height at Iso plane
+        const fovMeters = 3.0 * (2 * distToIso * Math.tan(58 / 2 * (Math.PI / 180))); // Zoom out 3x (150% more than 2x)
+        const pixelsPerMeter = img.height / 1.7; // Assuming atlas height represents 1.7m (Head to Toe)
+        const fovPixels = fovMeters * pixelsPerMeter;
 
-            // Return the real image URL
-            return selectedImage.url;
+        // --- 2. TRANSFORMS (Simulate C-Arm Movement) ---
+        // Mapping: cart_x (Longitudinal) -> Image Y (Spine Axis)
+        // cart_z (Lateral) -> Image X (Width Axis)
+
+        // Calibration:
+        // cart_x = 0.8 (Head) -> Image Y = 0 (Top)
+        // cart_x = 2.5 (Feet) -> Image Y corresponds to 1.7m
+        // We center the view at the current cart_x
+        const centerY = (cart_x - 0.8) * pixelsPerMeter;
+
+        // Lateral: Z=0 is center. 
+        // Image Width center = img.width / 2.
+        const centerX = (img.width / 2) - (cart_z * pixelsPerMeter);
+
+        // --- 3. RENDER ON CANVAS ---
+        // Fill pure black
+        ctx.fillStyle = "#050505";
+        ctx.fillRect(0, 0, size, size);
+
+        // Transform for Rotation (Orbital)
+        ctx.translate(size / 2, size / 2);
+
+        // Rotation Logic:
+        // User requested 90 deg rotation.
+        // wig_wag is tilt.
+        const rotation = -wig_wag + Math.PI / 2;
+        ctx.rotate(rotation);
+
+        // Simulation of Orbital Rotation (Pseudo-3D effect)
+        // orbital_slide rotates C-arm around patient.
+        // AP -> Lateral.
+        // We simulate this by scaling the width of the AP atlas.
+        const viewWidthScale = Math.max(0.2, Math.cos(orbital_slide));
+        ctx.scale(viewWidthScale, 1.0); // Compress width
+
+
+        // Draw Image Crop
+        // We want source rect centered at (centerX, centerY) with dim (fovPixels, fovPixels)
+        const sw = fovPixels / viewWidthScale; // Compensate scale to keep FOV constant
+        const sh = fovPixels;
+        const sx = centerX - sw / 2;
+        const sy = centerY - sh / 2;
+
+        try {
+            ctx.drawImage(img, sx, sy, sw, sh, -size / 2, -size / 2, size, size);
+        } catch (e) {
+            // Out of bounds safety
         }
 
-        // 3. Fallback: Generate SVG for zones without real images
-        let svgContent = "";
+        // --- 4. OVERLAYS (Label, Noise) ---
+        // Reset transform for text
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-        // Normalize rotation for view width (cos effect for rotation)
-        const viewWidth = Math.abs(Math.cos(orbital_slide)) * 0.8 + 0.2;
-        const spineOffset = Math.sin(orbital_slide) * 20; // Spine moves off-center during rotation
-
-        // Common bone styles
-        const boneFill = "#ddd";
-        const boneOpacity = "0.85";
-        const jointOpacity = "0.9";
-
-        // -- GENERATION LOGIC (Skeleton-Aware) --
-        switch (zone.key) {
-            case 'miss':
-                // NOISE ONLY - No SVG content
-                svgContent = "";
-                break;
-
-            case 'head':
-                // Skull & Cervical Spine
-                svgContent = `
-                <ellipse cx="${50 + spineOffset * 0.5}" cy="40" rx="${30 * viewWidth}" ry="35" fill="${boneFill}" opacity="0.9" filter="url(#blur)" />
-                <path d="M ${50 + spineOffset * 0.5 - 20 * viewWidth} 50 Q ${50 + spineOffset * 0.5} 80 ${50 + spineOffset * 0.5 + 20 * viewWidth} 50" stroke="#aaa" stroke-width="3" fill="none" opacity="0.8" />
-                <rect x="${45 + spineOffset}" y="70" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
-                <rect x="${45 + spineOffset}" y="88" width="10" height="15" rx="3" fill="#eee" opacity="0.9" />
-                `;
-                break;
-
-            case 'thorax':
-            case 'chest': // Legacy key mapping just in case
-                // Ribs & Thoracic Spine
-                const scrollYThorax = (cart_x % 0.2) * 500;
-                let ribs = "";
-                for (let i = 0; i < 6; i++) {
-                    const yBase = (i * 18) - scrollYThorax + 20;
-                    if (yBase > -10 && yBase < 110) {
-                        ribs += `
-                        <path d="M ${50 + spineOffset} ${yBase} Q ${10} ${yBase + 10} ${15} ${yBase + 25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
-                        <path d="M ${50 + spineOffset} ${yBase} Q ${90} ${yBase + 10} ${85} ${yBase + 25}" stroke="#ccc" stroke-width="4" fill="none" opacity="0.5" filter="url(#blur)" />
-                        `;
-                    }
-                }
-                let spineT = "";
-                for (let i = 0; i < 8; i++) {
-                    const yBase = (i * 12) - scrollYThorax + 10;
-                    if (yBase > -10 && yBase < 110) {
-                        spineT += `<rect x="${44 + spineOffset}" y="${yBase}" width="12" height="10" rx="2" fill="#eee" opacity="0.8" />`;
-                    }
-                }
-                const heartOpacity = Math.max(0, Math.cos(orbital_slide) * 0.3);
-                const heart = `<ellipse cx="${60 + spineOffset}" cy="60" rx="20" ry="25" fill="#eee" opacity="${heartOpacity}" filter="url(#blur)" />`;
-                svgContent = ribs + spineT + heart;
-                break;
-
-            case 'abdomen':
-            case 'pelvis': // Sharing style for now, but pelvis has wings
-                // Lumbar Spine & Pelvis Wings
-                const scrollYAbs = (cart_x % 0.2) * 400;
-                let spineL = "";
-                for (let i = 0; i < 5; i++) {
-                    const yBase = (i * 16) - scrollYAbs + 10;
-                    if (yBase > -10 && yBase < 110) {
-                        spineL += `<rect x="${42 + spineOffset}" y="${yBase}" width="16" height="14" rx="3" fill="#eee" opacity="0.9" />`;
-                    }
-                }
-                // Pelvis Wings (visible if lower abdomen or pelvis)
-                let pelvisW = "";
-                if (zone.key === 'pelvis' || cart_x > 1.9) {
-                    pelvisW = `
-                    <path d="M ${50 + spineOffset} 60 Q ${10} 60 ${15} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
-                    <path d="M ${50 + spineOffset} 60 Q ${90} 60 ${85} 100" stroke="#ddd" stroke-width="15" fill="none" opacity="0.7" filter="url(#blur)" />
-                    `;
-                }
-                svgContent = spineL + pelvisW;
-                break;
-
-            case 'shoulder':
-            case 'left_shoulder':
-            case 'right_shoulder':
-                svgContent = `
-                <!-- Clavicle -->
-                <path d="M ${20 + spineOffset} 30 Q ${50 + spineOffset} 40 ${80 + spineOffset} 30" stroke="${boneFill}" stroke-width="8" opacity="${boneOpacity}" filter="url(#blur)" />
-                <!-- Scapula Hint -->
-                <path d="M ${60 + spineOffset} 40 L ${80 + spineOffset} 80 L ${50 + spineOffset} 70 Z" fill="${boneFill}" opacity="0.5" filter="url(#blur)" />
-                <!-- Humeral Head -->
-                <circle cx="${80 + spineOffset}" cy="40" r="12" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
-                `;
-                break;
-
-            case 'humerus':
-                svgContent = `
-                <!-- Humerus Shaft -->
-                <rect x="${42 + spineOffset}" y="-10" width="14" height="120" rx="5" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <rect x="${46 + spineOffset}" y="-10" width="6" height="120" rx="2" fill="#fff" opacity="0.2" />
-                `;
-                break;
-
-            case 'forearm':
-                svgContent = `
-                <!-- Radius -->
-                <rect x="${35 + spineOffset}" y="-10" width="10" height="120" rx="3" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <!-- Ulna -->
-                <rect x="${55 + spineOffset}" y="-10" width="8" height="120" rx="3" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                `;
-                break;
-
-            case 'hand':
-                svgContent = `
-                <!-- Wrist Carpals -->
-                <circle cx="${50 + spineOffset}" cy="10" r="15" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
-                <!-- Metacarpals (5 bones) -->
-                ${[0, 1, 2, 3, 4].map(i => `<rect x="${30 + spineOffset + i * 10}" y="30" width="6" height="30" rx="2" fill="${boneFill}" opacity="${boneOpacity}" />`).join('')}
-                <!-- Phalanges -->
-                ${[0, 1, 2, 3, 4].map(i => `<rect x="${30 + spineOffset + i * 10}" y="65" width="5" height="25" rx="1" fill="${boneFill}" opacity="${boneOpacity}" />`).join('')}
-                `;
-                break;
-
-            case 'femur':
-                svgContent = `
-                <!-- Main Femur Shaft -->
-                <rect x="${42 + spineOffset}" y="-20" width="18" height="140" rx="6" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <!-- Marrow Cavity hint -->
-                <rect x="${47 + spineOffset}" y="-10" width="8" height="120" rx="2" fill="#fff" opacity="0.2" />
-                `;
-                break;
-
-            case 'knee':
-                svgContent = `
-                <!-- Femur Condyles -->
-                <circle cx="${40 + spineOffset}" cy="30" r="15" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
-                <circle cx="${60 + spineOffset}" cy="30" r="15" fill="${boneFill}" opacity="${jointOpacity}" filter="url(#blur)" />
-                <!-- Tibia Plateau -->
-                <rect x="${30 + spineOffset}" y="50" width="40" height="15" rx="4" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <!-- Patella Shadow -->
-                <circle cx="${50 + spineOffset}" cy="40" r="12" fill="#fff" opacity="0.3" filter="url(#blur)" />
-                `;
-                break;
-
-            case 'tibia':
-                svgContent = `
-                <!-- Tibia (Thicker) -->
-                <rect x="${35 + spineOffset}" y="-20" width="14" height="140" rx="4" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <!-- Fibula (Thinner) -->
-                <rect x="${60 + spineOffset}" y="-20" width="6" height="140" rx="3" fill="${boneFill}" opacity="0.7" filter="url(#blur)" />
-                `;
-                break;
-
-            case 'ankle':
-                svgContent = `
-                <!-- Tibia/Fibula Ends -->
-                <rect x="${35 + spineOffset}" y="10" width="14" height="40" rx="4" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <rect x="${60 + spineOffset}" y="10" width="6" height="40" rx="3" fill="${boneFill}" opacity="0.7" filter="url(#blur)" />
-                <!-- Talus Dome -->
-                <path d="M ${30 + spineOffset} 60 Q ${50 + spineOffset} 45 ${70 + spineOffset} 60" stroke="${boneFill}" stroke-width="10" fill="none" opacity="${jointOpacity}" filter="url(#blur)" />
-                `;
-                break;
-
-            case 'foot':
-                svgContent = `
-                <!-- Tarsals Cluster -->
-                <path d="M ${30 + spineOffset} 20 Q ${70 + spineOffset} 10 ${70 + spineOffset} 50 Q ${30 + spineOffset} 60 ${30 + spineOffset} 20" fill="${boneFill}" opacity="${boneOpacity}" filter="url(#blur)" />
-                <!-- Metatarsals -->
-                ${[0, 1, 2, 3, 4].map(i => `<rect x="${30 + spineOffset + i * 8}" y="60" width="5" height="30" rx="1" fill="${boneFill}" opacity="${boneOpacity}" />`).join('')}
-                `;
-                break;
-
-            default:
-                // Fallback (Generic Bone)
-                svgContent = `<rect x="${45 + spineOffset}" y="0" width="10" height="100" fill="${boneFill}" opacity="0.5" />`;
-                break;
+        // Update UI state for Download Filename
+        // Use legacy helper to guess zone label from cart_x
+        const anatomyLabel = getAnatomyZone(cart_x).label;
+        if (anatomyLabel !== currentAnatomy) {
+            setCurrentAnatomy(anatomyLabel);
         }
 
-        // Update UI state with anatomy name
-        setCurrentAnatomy(anatomyType);
+        // Noise
+        // Since we can't efficiently do SVG filters on canvas easily without WebGL or complex logic,
+        // let's just draw valid anatomy. The user wants "Skeleton".
+        // We can create a lightweight noise pattern if needed, but 'skeleton.png' is usually enough.
 
-        // Common Noise & Overlay
-        const svgString = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100">
-        <defs>
-          <filter id="blur"><feGaussianBlur in="SourceGraphic" stdDeviation="1.5" /></filter>
-          <filter id="noise">
-            <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" />
-            <feComponentTransfer><feFuncA type="table" tableValues="0 0.2" /></feComponentTransfer>
-          </filter>
-        </defs>
-        
-        <!-- Background -->
-        <rect width="100" height="100" fill="#050505" />
-        
-        <!-- Generated Anatomy Content -->
-        <!-- Rotated 270 per user request -->
-        <g transform="rotate(${-wig_wag * 20 + 270}, 50, 50)">
-            ${svgContent}
-        </g>
+        // Metadata
+        ctx.font = "12px monospace";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+        ctx.fillText(`kVp: 78  mA: 4.2`, 10, 20);
 
-        <!-- Noise Overlay -->
-        <rect width="100" height="100" filter="url(#noise)" opacity="0.5" />
-        
-        <!-- Metadata Overlay -->
-        <g opacity="0.8" font-family="monospace" font-size="4">
-          <text x="4" y="8" fill="#00ff00">kVp: 78</text>
-          <text x="4" y="14" fill="#00ff00">mA: 4.2</text>
-          <text x="65" y="8" fill="#fff" opacity="0.7">${anatomyType}</text>
-          <text x="65" y="14" fill="#fff" opacity="0.5">${orbital_slide > 0.2 || orbital_slide < -0.2 ? 'OBL/LAT' : 'AP'}</text>
-        </g>
-        
-        <!-- Orientation Marker -->
-        <circle cx="92" cy="92" r="3" fill="none" stroke="#fff" stroke-width="0.5" opacity="0.5" />
-        <text x="89" y="93.5" fill="#fff" font-size="3" opacity="0.5">R</text>
-      </svg>
-    `;
+        // Orientation "R"
+        ctx.font = "20px sans-serif";
+        ctx.fillText("R", size - 30, size - 20);
 
-        return `data:image/svg+xml;base64,${btoa(svgString)}`;
+        return canvas.toDataURL();
+    };
+
+    const generateNoiseXray = (msg) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 256;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, 256, 256);
+        ctx.fillStyle = "#333";
+        ctx.font = "20px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(msg || "NO SIGNAL", 128, 128);
+        return canvas.toDataURL();
     };
 
     const handleDownloadXray = () => {
@@ -748,6 +627,39 @@ const App = () => {
         }, 450);
     };
 
+    // --- ARDUINO CONNECTION ---
+    const connectArduino = async () => {
+        if (!("serial" in navigator)) {
+            alert("Use Chrome or Edge (Web Serial required)");
+            return false;
+        }
+
+        if (isArduinoConnectedRef.current && serialWriterRef.current)
+            return true;
+
+        try {
+            const port = await navigator.serial.requestPort();  // must be user gesture
+            await port.open({ baudRate: 115200 });
+
+            serialPortRef.current = port;
+            serialWriterRef.current = port.writable.getWriter();
+            isArduinoConnectedRef.current = true;
+
+            console.log("Arduino connected");
+            return true;
+        } catch (e) {
+            console.warn("Connection cancelled or failed:", e);
+            return false;
+        }
+    };
+
+    const ensureArduinoConnected = async () => {
+        if (isArduinoConnectedRef.current && serialWriterRef.current)
+            return true;
+
+        return await connectArduino();
+    };
+
     useEffect(() => {
         const handleKeyDown = (e) => {
             // Toggle Debug
@@ -794,6 +706,10 @@ const App = () => {
         orbit.enableDamping = true;
         orbit.target.set(0, 1.0, 0.5); // Looking at patient's feet area
 
+        // ENABLE LAYERS for Camera (0: Default, 1: Landmarks)
+        camera.layers.enable(0);
+        camera.layers.enable(1);
+
         const ambient = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambient);
         const sun = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -821,9 +737,9 @@ const App = () => {
         floor.receiveShadow = true;
         scene.add(floor);
 
-        // Walls (15x15 room, 3m height)
+        // Walls (15x15 room, 9m height)
         const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 0.8, side: THREE.DoubleSide });
-        const wallHeight = 3;
+        const wallHeight = 9;
 
         // North wall (positive Z)
         const wallNorth = new THREE.Mesh(new THREE.PlaneGeometry(15, wallHeight), wallMaterial);
@@ -851,6 +767,92 @@ const App = () => {
         wallWest.rotation.y = Math.PI / 2;
         wallWest.receiveShadow = true;
         scene.add(wallWest);
+
+        // --- X-RAY ROOM DOOR (West Wall) ---
+        const doorGroup = new THREE.Group();
+        // Position on West Wall (X=-7.5). Shifted slightly inward (X=-7.45) to avoid z-fighting.
+        // Center of wall is Z=0. Let's put door at Z=0.
+        doorGroup.position.set(-7.45, 0, 0);
+        doorGroup.rotation.y = Math.PI / 2; // Face into room
+        scene.add(doorGroup);
+
+        // 1. Door Frame (Stainless Steel)
+        const frameW = 2.4;
+        const frameH = 2.4;
+        const frameD = 0.15;
+        const frameGeo = new THREE.BoxGeometry(frameW, frameH, frameD);
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4, metalness: 0.6 });
+        const frame = new THREE.Mesh(frameGeo, frameMat);
+        frame.position.set(0, frameH / 2, 0);
+        doorGroup.add(frame);
+
+        // 2. Door Panel (Lead-Lined, Sliding Style)
+        // Sliding door usually wider than opening. Let's make it cover the frame opening.
+        const doorW = 2.2;
+        const doorH = 2.3;
+        const doorD = 0.08;
+        const doorGeo = new THREE.BoxGeometry(doorW, doorH, doorD);
+        const doorMat = new THREE.MeshStandardMaterial({
+            color: 0xe0e0e0, // Off-white / Medical Grey
+            roughness: 0.7,
+            metalness: 0.1
+        });
+        const door = new THREE.Mesh(doorGeo, doorMat);
+        door.position.set(0.1, doorH / 2, 0.06); // Slightly offset Z (in door group space) for sliding look
+        doorGroup.add(door);
+
+        // 3. Kickplate (Chrome)
+        const kickH = 0.3;
+        const kickGeo = new THREE.PlaneGeometry(doorW - 0.1, kickH);
+        const kickMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.2, metalness: 0.8 });
+        const kick = new THREE.Mesh(kickGeo, kickMat);
+        kick.position.set(0.1, kickH / 2 + 0.01, 0.06 + doorD / 2 + 0.001); // On surface of door
+        doorGroup.add(kick);
+
+        // 4. Lead Glass Window (Small, Eye Level)
+        const winW = 0.3;
+        const winH = 0.6;
+        const winGeo = new THREE.PlaneGeometry(winW, winH);
+        const winMat = new THREE.MeshPhysicalMaterial({
+            color: 0x88ccaa, // Lead glass greenish
+            metalness: 0.1,
+            roughness: 0.1,
+            transmission: 0.5, // Semi-transparent
+            thickness: 0.05
+        });
+        const windowMesh = new THREE.Mesh(winGeo, winMat);
+        windowMesh.position.set(0.1, 1.6, 0.06 + doorD / 2 + 0.002);
+        doorGroup.add(windowMesh);
+
+        // Frame for Window
+        const winFrameGeo = new THREE.BoxGeometry(winW + 0.04, winH + 0.04, 0.02);
+        const winFrame = new THREE.Mesh(winFrameGeo, frameMat);
+        winFrame.position.set(0.1, 1.6, 0.06 + doorD / 2);
+        doorGroup.add(winFrame);
+
+        // 5. Handle (Vertical Bar)
+        const handleH = 0.6;
+        const handleGeo = new THREE.CylinderGeometry(0.02, 0.02, handleH, 8);
+        const handle = new THREE.Mesh(handleGeo, kickMat);
+        // Place on right side of door (if sliding left)
+        handle.position.set(0.8, 1.1, 0.06 + doorD / 2 + 0.04);
+        doorGroup.add(handle);
+
+        // 6. Warning Light Box (Above Frame)
+        const warnBoxGeo = new THREE.BoxGeometry(0.6, 0.2, 0.1);
+        const warnBoxMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        const warnBox = new THREE.Mesh(warnBoxGeo, warnBoxMat);
+        warnBox.position.set(0, frameH + 0.2, 0); // Above frame
+        doorGroup.add(warnBox);
+
+        // "X-RAY IN USE" Text/Light Face
+        const warnFaceGeo = new THREE.PlaneGeometry(0.5, 0.15);
+        const warnFaceMat = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red = On/Warning (or darker if off)
+        // Let's make it look "off" but visible red, or "on" if beam is active? 
+        // For visualizer, maybe constant red is clearer it's an x-ray room.
+        const warnFace = new THREE.Mesh(warnFaceGeo, warnFaceMat);
+        warnFace.position.set(0, 0, 0.051); // On surface of box
+        warnBox.add(warnFace);
 
         // Wall Decorations - Horizontal Stripes
         const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0xe8eef2, roughness: 0.7 });
@@ -1043,6 +1045,7 @@ const App = () => {
             );
             sphere.renderOrder = 999;
             sphere.name = key;
+            sphere.layers.set(1); // Layer 1: Landmarks
             skelGroup.add(sphere);
         });
 
@@ -1053,6 +1056,7 @@ const App = () => {
             const line = new THREE.Line(geo, mat);
             line.renderOrder = 998;
             line.name = edge.join('-'); // Use a unique name for the edge line
+            line.layers.set(1); // Layer 1: Landmarks
             skelGroup.add(line);
         });
 
@@ -1085,147 +1089,208 @@ const App = () => {
         renderer.render(scene, camera);
         hasRenderedInitialRef.current = true;
 
+        // --- CEILING ---
+        // Room is 15m (Z-axis, North-South) x 10m (X-axis, East-West)? Wait, let's check walls.
+        // North/South walls are 15m wide (X-axis). East/West walls are 10m wide (Z-axis).
+        // Ceiling should match floor: 15x10.
+        const ceilingGroup = new THREE.Group();
+        ceilingGroup.position.set(0, wallHeight, 0); // Cap the room
+        scene.add(ceilingGroup);
+
+        // Main Ceiling Plane
+        const ceilingMaterial = new THREE.MeshStandardMaterial({
+            color: 0xfdfbf7, // Off-white/Cream
+            roughness: 0.9,
+            side: THREE.DoubleSide
+        });
+        const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(15, 10), ceilingMaterial);
+        ceiling.rotation.x = Math.PI / 2; // Face down
+        ceiling.receiveShadow = true;
+        ceilingGroup.add(ceiling);
+
+        // Ceiling Tiles / Grid Texture (Procedural via Canvas?) or just simple geometry
+        // Let's add some "light panels" - Emissive rectangles
+        const lightPanelGeo = new THREE.PlaneGeometry(1.2, 0.6);
+        const lightPanelMat = new THREE.MeshStandardMaterial({
+            color: 0xffffff,
+            emissive: 0xffffee,
+            emissiveIntensity: 0.8,
+            roughness: 0.2
+        });
+
+        // Add 2 rows of lights
+        for (let x = -6; x <= 6; x += 3) {
+            for (let z = -3.5; z <= 3.5; z += 3.5) {
+                const panel = new THREE.Mesh(lightPanelGeo, lightPanelMat);
+                panel.rotation.x = Math.PI / 2;
+                panel.position.set(x, -0.01, z); // Slightly below ceiling
+                ceilingGroup.add(panel);
+
+                // Add a local point light for each panel to make it realistic? 
+                // Too expensive for 10+ lights. Stick to the main directional light + ambient.
+            }
+        }
+
         // --- LOAD MODELS (Promise-based) ---
         const loader = new GLTFLoader();
+        // Register extension if available (it's not in v0.182, but good practice to check/try)
+        // Since we removed it from extensionsRequired, it should load with fallback materials.
+
         const loadModel = (url) => new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
 
-        Promise.all([
+        Promise.allSettled([
             loadModel(PATIENT_URL),
             loadModel(CARM_URL),
             loadModel(realsense_URL),
             loadModel('/fire_extinguisher/scene.gltf'),
             loadModel('/first_aid_box/scene.gltf'),
             loadModel('/female_human_skeleton_-_zbrush_-_anatomy_study/scene.gltf')
-        ]).then(([patientGltf, carmGltf, rsGltf, fireGltf, aidGltf, femSkelGltf]) => {
+        ]).then((results) => {
             if (!mounted) return;
+
+            // Helper to get result or null
+            const getModel = (index) => results[index].status === 'fulfilled' ? results[index].value : null;
 
             // 1. Patient
-            const patientModel = patientGltf.scene;
-            // Capture Local Bounds (before transform)
-            const patientBox = new THREE.Box3().setFromObject(patientModel);
-            patientBoundsRef.current = {
-                ready: true,
-                minX: patientBox.min.x, maxX: patientBox.max.x,
-                minY: patientBox.min.y, maxY: patientBox.max.y,
-                minZ: patientBox.min.z, maxZ: patientBox.max.z
-            };
-            patientModelRef.current = patientModel;
+            const patientGltf = getModel(0);
+            if (patientGltf) {
+                const patientModel = patientGltf.scene;
+                // Capture Local Bounds (before transform)
+                const patientBox = new THREE.Box3().setFromObject(patientModel);
+                patientBoundsRef.current = {
+                    ready: true,
+                    minX: patientBox.min.x, maxX: patientBox.max.x,
+                    minY: patientBox.min.y, maxY: patientBox.max.y,
+                    minZ: patientBox.min.z, maxZ: patientBox.max.z
+                };
+                patientModelRef.current = patientModel;
 
-            const patientSize = new THREE.Vector3();
-            patientBox.getSize(patientSize);
-            const maxDimP = Math.max(patientSize.x, patientSize.y, patientSize.z);
-            if (maxDimP > 0) {
-                const scale = 1.7 / maxDimP;
-                patientModel.scale.set(scale, scale, scale);
+                const patientSize = new THREE.Vector3();
+                patientBox.getSize(patientSize);
+                const maxDimP = Math.max(patientSize.x, patientSize.y, patientSize.z);
+                if (maxDimP > 0) {
+                    const scale = 1.7 / maxDimP;
+                    patientModel.scale.set(scale, scale, scale);
+                }
+                patientModel.rotation.set(-Math.PI / 2, 0, Math.PI);
+                patientModel.position.set(0, 1.50, 0.0);
+                patientModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+                bedGroup.add(patientModel);
+            } else {
+                console.warn("Patient model failed to load:", results[0].reason);
             }
-            patientModel.rotation.set(-Math.PI / 2, 0, Math.PI);
-            patientModel.position.set(0, 1.50, 0.0);
-            patientModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-            bedGroup.add(patientModel);
 
             // 2. Extra C-Arm
-            const carmModel = carmGltf.scene;
-            // cArmModelRef.current = carmModel; // Unused
-            carmModel.position.set(1.5, 0, -2.0);
-            carmModel.traverse(n => {
-                if (n.isMesh) {
-                    n.castShadow = true;
-                    n.receiveShadow = true;
-                    n.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.2 });
-                }
-            });
-            scene.add(carmModel);
+            const carmGltf = getModel(1);
+            if (carmGltf) {
+                const carmModel = carmGltf.scene;
+                // cArmModelRef.current = carmModel; // Unused
+                carmModel.position.set(1.5, 0, -2.0);
+                carmModel.traverse(n => {
+                    if (n.isMesh) {
+                        n.castShadow = true;
+                        n.receiveShadow = true;
+                        n.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.2 });
+                    }
+                });
+                scene.add(carmModel);
+            }
 
             // 3. Realsense
-            const rsModel = rsGltf.scene;
-            const rsBox = new THREE.Box3().setFromObject(rsModel);
-            const rsSize = new THREE.Vector3();
-            rsBox.getSize(rsSize);
-            const maxDimR = Math.max(rsSize.x, rsSize.y, rsSize.z);
-            if (maxDimR > 0) {
-                const scale = 0.15 / maxDimR;
-                rsModel.scale.set(scale, scale, scale);
-            } else {
-                rsModel.scale.set(0.15, 0.15, 0.15);
+            const rsGltf = getModel(2);
+            if (rsGltf) {
+                const rsModel = rsGltf.scene;
+                const rsBox = new THREE.Box3().setFromObject(rsModel);
+                const rsSize = new THREE.Vector3();
+                rsBox.getSize(rsSize);
+                const maxDimR = Math.max(rsSize.x, rsSize.y, rsSize.z);
+                if (maxDimR > 0) {
+                    const scale = 0.15 / maxDimR;
+                    rsModel.scale.set(scale, scale, scale);
+                } else {
+                    rsModel.scale.set(0.15, 0.15, 0.15);
+                }
+
+                // Attach directly to C-Arm Slide (Orbital Frame) so it moves with it
+                // Local Position on the Arc (Near Detector)
+                // Detector is at Y ~= 0.8 (cRadius). 
+                // We place Camera slightly offset.
+                if (cArmSlideRef.current) {
+                    cArmSlideRef.current.add(rsModel);
+                    // Local Coords relative to C-Slide center
+                    rsModel.position.set(0.1, 0.95, 0.0);
+                    rsModel.rotation.set(Math.PI / 2, 0, Math.PI);
+                } else {
+                    scene.add(rsModel); // Fallback
+                }
+                rsModel.updateMatrixWorld(true);
+                rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+                // Store realsense model reference
+                realsenseModelRef.current = rsModel;
             }
-
-            // Attach directly to C-Arm Slide (Orbital Frame) so it moves with it
-            // Local Position on the Arc (Near Detector)
-            // Detector is at Y ~= 0.8 (cRadius). 
-            // We place Camera slightly offset.
-            if (cArmSlideRef.current) {
-                cArmSlideRef.current.add(rsModel);
-                // Local Coords relative to C-Slide center
-                rsModel.position.set(0.1, 0.95, 0.0);
-                rsModel.rotation.set(Math.PI / 2, 0, Math.PI);
-            } else {
-                scene.add(rsModel); // Fallback
-            }
-
-            rsModel.updateMatrixWorld(true);
-
-            rsModel.updateMatrixWorld(true);
-
-            rsModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-
-            // Store realsense model reference
-            realsenseModelRef.current = rsModel;
 
             // 4. Fire Extinguisher
-            const fireModel = fireGltf.scene;
-            const fireBox = new THREE.Box3().setFromObject(fireModel);
-            const fireSize = new THREE.Vector3();
-            fireBox.getSize(fireSize);
-            const maxDimF = Math.max(fireSize.x, fireSize.y, fireSize.z);
-            if (maxDimF > 0) {
-                const scale = 0.5 / maxDimF; // 50cm tall approx
-                fireModel.scale.set(scale, scale, scale);
+            const fireGltf = getModel(3);
+            if (fireGltf) {
+                const fireModel = fireGltf.scene;
+                const fireBox = new THREE.Box3().setFromObject(fireModel);
+                const fireSize = new THREE.Vector3();
+                fireBox.getSize(fireSize);
+                const maxDimF = Math.max(fireSize.x, fireSize.y, fireSize.z);
+                if (maxDimF > 0) {
+                    const scale = 0.5 / maxDimF; // 50cm tall approx
+                    fireModel.scale.set(scale, scale, scale);
+                }
+                // Reposition below First Aid Box (X=2, Y=1.5)
+                // 0.3m gap below box (Box Bottom ~1.3m). Top of Extinguisher at 1.0m. Center ~0.75m.
+                // Let's put it at Y=1.0 for visual balance and "0.3m away" feel
+                fireModel.position.set(2, 1.0, 4.95);
+                fireModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+                scene.add(fireModel);
             }
-            // Reposition below First Aid Box (X=2, Y=1.5)
-            // 0.3m gap below box (Box Bottom ~1.3m). Top of Extinguisher at 1.0m. Center ~0.75m.
-            // Let's put it at Y=1.0 for visual balance and "0.3m away" feel
-            fireModel.position.set(2, 1.0, 4.95);
-            fireModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-            scene.add(fireModel);
 
             // 5. First Aid Box
-            const aidModel = aidGltf.scene;
-            const aidBox = new THREE.Box3().setFromObject(aidModel);
-            const aidSize = new THREE.Vector3();
-            aidBox.getSize(aidSize);
-            const maxDimA = Math.max(aidSize.x, aidSize.y, aidSize.z);
-            if (maxDimA > 0) {
-                const scale = 0.4 / maxDimA; // 40cm box
-                aidModel.scale.set(scale, scale, scale);
+            const aidGltf = getModel(4);
+            if (aidGltf) {
+                const aidModel = aidGltf.scene;
+                const aidBox = new THREE.Box3().setFromObject(aidModel);
+                const aidSize = new THREE.Vector3();
+                aidBox.getSize(aidSize);
+                const maxDimA = Math.max(aidSize.x, aidSize.y, aidSize.z);
+                if (maxDimA > 0) {
+                    const scale = 0.4 / maxDimA; // 40cm box
+                    aidModel.scale.set(scale, scale, scale);
+                }
+                // Midpoint between QSTSS (X=4) and MOEHE (X=0) -> X=2
+                // Height Y=1.5 (Middle of wall area), Z=10m room
+                aidModel.position.set(2, 1.5, 4.95);
+                aidModel.rotation.y = Math.PI; // Face room
+                aidModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+                scene.add(aidModel);
             }
-            // Midpoint between QSTSS (X=4) and MOEHE (X=0) -> X=2
-            // Height Y=1.5 (Middle of wall area), Z=10m room
-            aidModel.position.set(2, 1.5, 4.95);
-            aidModel.rotation.y = Math.PI; // Face room
-            aidModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-            scene.add(aidModel);
 
             // 6. Female Skeleton
-            const skelModel = femSkelGltf.scene;
-            const skelBox = new THREE.Box3().setFromObject(skelModel);
-            const skelSize = new THREE.Vector3();
-            skelBox.getSize(skelSize);
-            const maxDimS = skelSize.y; // Height is main dimension
-            if (maxDimS > 0) {
-                const scale = 1.7 / maxDimS; // 1.7m tall
-                skelModel.scale.set(scale, scale, scale);
+            const femSkelGltf = getModel(5);
+            if (femSkelGltf) {
+                const skelModel = femSkelGltf.scene;
+                const skelBox = new THREE.Box3().setFromObject(skelModel);
+                const skelSize = new THREE.Vector3();
+                skelBox.getSize(skelSize);
+                const maxDimS = skelSize.y; // Height is main dimension
+                if (maxDimS > 0) {
+                    const scale = 1.7 / maxDimS; // 1.7m tall
+                    skelModel.scale.set(scale, scale, scale);
+                }
+                // Midpoint between First Aid (X=2) and MOEHE (X=0) -> X=1
+                // Moved Up 1m (Y=1) and Left 3.5m (X = 1 - 3.5 = -2.5)
+                skelModel.position.set(-2.5, 1.0, 4.95);
+                skelModel.rotation.y = Math.PI; // Face room
+                skelModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+                scene.add(skelModel);
+            } else {
+                console.warn("Skeleton model failed to load (likely missing extension support):", results[5].reason);
             }
-            // Midpoint between First Aid (X=2) and MOEHE (X=0) -> X=1
-            // Moved Up 1m (Y=1) and Left 3.5m (X = 1 - 3.5 = -2.5)
-            skelModel.position.set(-2.5, 1.0, 4.95);
-            skelModel.rotation.y = Math.PI; // Face room
-            skelModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-            scene.add(skelModel);
 
-            setModelLoading(false);
-        }).catch(err => {
-            if (!mounted) return;
-            console.error("Model Load Error", err);
             setModelLoading(false);
         });
 
@@ -1630,20 +1695,12 @@ const App = () => {
                         setBeamRegionUI(zoneResult.label);
                         setBeamZoneKeyUI(zoneResult.key);
 
-                        // --- UPDATE SKELETON DEBUG VISUALS (Toggle 'L') ---
+                        // --- UPDATE SKELETON DEBUG VISUALS (Always update for Depth View) ---
                         if (skeletonDebugRef.current) {
-                            // Only visible if 'L' key active (we need to add that state, currently using debugEnabled)
-                            // User asked for 'L' toggle. Let's assume debugEnabled covers it for now OR add dedicated state.
-                            // Requirement: "Add a toggle key (e.g. 'L') to show/hide landmark spheres."
-                            // We need a new state for landmarks. Let's use a ref for now to avoid re-renders?
-                            // No, state `showLandmarks` is better.
-                            // But for minimal churn, let's piggyback on debugEnabled but filter visibility?
-                            // Actually, I should add the toggle.
-                            // For now, I'll use `showLandmarksRef.current`. I need to add that ref.
+                            // Globally visible, filtered by Camera Layers
+                            skeletonDebugRef.current.visible = true;
 
-                            skeletonDebugRef.current.visible = showLandmarksRef.current;
-
-                            if (showLandmarksRef.current && patientModelRef.current && bounds.ready) {
+                            if (patientModelRef.current && bounds.ready) {
                                 // Re-compute corrected nodes
                                 const axes = getInferredPatientAxes(bounds);
                                 const localLandmarks = {};
@@ -1776,7 +1833,8 @@ const App = () => {
                         );
                     }
 
-                    // --- RENDER PASS 1: CAPTURE DEPTH ---
+                    // --- RENDER PASS 1: CAPTURE DEPTH (Layer 0 only) ---
+                    depthCameraRef.current.layers.set(0); // Physical World
                     renderer.setRenderTarget(depthRenderTargetRef.current);
                     // Clear mainly depth
                     renderer.clear();
@@ -1787,14 +1845,44 @@ const App = () => {
                     if (depthVizSceneRef.current && depthVizTargetRef.current) {
                         renderer.setRenderTarget(depthVizTargetRef.current);
                         renderer.render(depthVizSceneRef.current, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)); // Use simple camera
+
+                        // --- RENDER PASS 3: OVERLAY LANDMARKS (Layer 1) ---
+                        // ALWAYS RENDER IN DEPTH VIEW (User Request)
+                        renderer.autoClear = false; // Don't wipe the depth map we just drew
+
+                        // CRITICAL: Temporarily remove scene background so we don't draw the grey void over our depth map
+                        const oldBg = scene.background;
+                        scene.background = null;
+
+                        depthCameraRef.current.layers.set(1); // Landmarks Layer
+                        renderer.render(scene, depthCameraRef.current); // Render landmarks on top
+
+                        // Restore
+                        scene.background = oldBg;
+                        renderer.autoClear = true;
+
                         renderer.setRenderTarget(null);
                     }
 
+                    // Restore Camera Layer State
+                    depthCameraRef.current.layers.set(0);
+
                     depthCameraRef.current.updateMatrixWorld(true);
 
+                    // (The follow-up render to depthRenderTargetRef.current in original code was redundant or debug? 
+                    // It re-renders scene to depth target. We already did that in Pass 1. 
+                    // Keeping it might be for the "readPixels" effect below? 
+                    // Actually, the readPixels reads from depthVizTargetRef.current.
+                    // So we don't need to re-render to depthRenderTargetRef.current unless that target is used elsewhere.)
+                    // The original code re-rendered to depthRenderTargetRef.current here. I'll leave it but ensure layer 0.
+
+                    /* 
+                    // Original block re-render:
                     renderer.setRenderTarget(depthRenderTargetRef.current);
                     renderer.render(scene, depthCameraRef.current);
-                    renderer.setRenderTarget(null);
+                    renderer.setRenderTarget(null); 
+                    */
+                    // Removing redundant re-render as we did Pass 1.
 
                     // Update debug helper
                     // Update debug helper
@@ -1807,6 +1895,12 @@ const App = () => {
                 }
 
 
+
+                if (showLandmarksRef.current) {
+                    camera.layers.enable(1);
+                } else {
+                    camera.layers.disable(1);
+                }
 
                 renderer.render(scene, camera);
 
@@ -1878,6 +1972,39 @@ const App = () => {
     useEffect(() => {
         beamActiveRef.current = beamActive;
     }, [beamActive]);
+
+    //Arduino useEffect for servo updates//
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+
+            const wRad = controlsRef.current.wig_wag;
+            const cRad = controlsRef.current.column_rot;
+
+            const wDeg = radToDeg(wRad);
+            const cDeg = radToDeg(cRad);
+
+            // Map simulator ranges to servo movement
+            const wServo = clamp(90 + (wDeg / 23) * 45, 0, 180);
+            const cServo = clamp(90 + (cDeg / 86) * 70, 0, 180);
+
+            const now = performance.now();
+            const last = lastSentRef.current;
+
+            if (
+                Math.abs(wServo - (last.w ?? wServo)) >= 1 ||
+                Math.abs(cServo - (last.c ?? cServo)) >= 1 ||
+                now - last.t > 200
+            ) {
+                lastSentRef.current = { w: wServo, c: cServo, t: now };
+                sendServos(wServo, cServo);
+            }
+
+        }, 40); // ~25 Hz
+
+        return () => clearInterval(interval);
+    }, []);
+    ////////////end of servo updates///////
 
     // Depth canvas update effect
     useEffect(() => {
@@ -2031,6 +2158,7 @@ const App = () => {
                 onExpose={handleTakeXray}
                 onSave={handleDownloadXray}
                 beamActive={beamActive}
+                ensureArduinoConnected={ensureArduinoConnected}
             />
 
 

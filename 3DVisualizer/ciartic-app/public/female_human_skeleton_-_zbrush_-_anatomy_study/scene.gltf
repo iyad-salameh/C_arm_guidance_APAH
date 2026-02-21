@@ -72,9 +72,6 @@
       "uri": "scene.bin"
     }
   ],
-  "extensionsRequired": [
-    "KHR_materials_pbrSpecularGlossiness"
-  ],
   "extensionsUsed": [
     "KHR_materials_pbrSpecularGlossiness"
   ],

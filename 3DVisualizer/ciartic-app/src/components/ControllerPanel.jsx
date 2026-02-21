@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 
-const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }) => {
+//const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }) => {
+const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive, ensureArduinoConnected }) => {
     const intervalRef = useRef(null);
 
     // --- CONFIGURATION ---
@@ -199,13 +200,29 @@ const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }
     };
 
     // Helper for button events
-    const bindBtn = (key, delta) => ({
-        onMouseDown: () => startMove(key, delta),
+    // Helper for button events
+    // connectFirst = true only for Wig-Wag + Col Rot buttons
+    const bindBtn = (key, delta, connectFirst = false) => ({
+        onMouseDown: async () => {
+            if (connectFirst && ensureArduinoConnected) {
+                const ok = await ensureArduinoConnected();
+                if (!ok) return; // user cancelled or failed
+            }
+            startMove(key, delta);
+        },
         onMouseUp: stopMove,
         onMouseLeave: stopMove,
-        onTouchStart: (e) => { e.preventDefault(); startMove(key, delta); },
+        onTouchStart: async (e) => {
+            e.preventDefault();
+            if (connectFirst && ensureArduinoConnected) {
+                const ok = await ensureArduinoConnected();
+                if (!ok) return;
+            }
+            startMove(key, delta);
+        },
         onTouchEnd: stopMove
     });
+
 
     return (
         <div style={styles.panel}>
@@ -248,8 +265,8 @@ const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }
                 {/* Wig-Wag (Yellow/Blue) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Wig-Wag</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themeYellow }} {...bindBtn('wig_wag', 0.006)}>Y+</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeBlue }}   {...bindBtn('wig_wag', -0.006)}>Y-</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeYellow }} {...bindBtn('wig_wag', 0.006, true)}>Y+</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeBlue }}   {...bindBtn('wig_wag', -0.006, true)}>Y-</button>
                 </div>
 
                 {/* Lift (Orange) */}
@@ -264,8 +281,8 @@ const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }
             <div style={{ ...styles.col, width: '100%', alignItems: 'center' }}>
                 <span style={styles.label}>Col Rot</span>
                 <div style={{ display: 'flex', gap: '15px' }}>
-                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', -0.01)}>↺</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', 0.01)}>↻</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', -0.01, true)}>↺</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', 0.01, true)}>↻</button>
                 </div>
             </div>
 
