@@ -1,5 +1,5 @@
 #include <Servo.h>
-
+int laser = 7; // laser pointer to mimic the debugger line
 Servo servoWigWag;   // pin 9
 Servo servoColRot;   // pin 10
 
@@ -25,6 +25,8 @@ int clampInt(int v, int lo, int hi) {
 }
 
 void setup() {
+
+  digitalWrite(laser, HIGH);
   Serial.begin(115200);
   servoWigWag.attach(9);
   servoColRot.attach(10);
