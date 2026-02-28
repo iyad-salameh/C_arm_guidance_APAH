@@ -1,7 +1,6 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef } from 'react';
 
-//const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive }) => {
-const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive, ensureArduinoConnected }) => {
+const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArduinoConnected }) => {
     const intervalRef = useRef(null);
 
     // --- CONFIGURATION ---
@@ -199,8 +198,7 @@ const ControllerPanel = ({ controls, setControls, onExpose, onSave, beamActive, 
         }
     };
 
-    // Helper for button events
-    // Helper for button events
+    // Helpers for bindBtn
     // connectFirst = true only for Wig-Wag + Col Rot buttons
     const bindBtn = (key, delta, connectFirst = false) => ({
         onMouseDown: async () => {

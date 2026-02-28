@@ -109,8 +109,6 @@ export const distancePointToLineNoAlloc = (P, A, B, tmpAB, tmpAP) => {
     const lenSq = tmpAB.lengthSq();
     if (lenSq < 1e-12) return P.distanceTo(A);
 
-    const t = tmpAP.dot(tmpAB) / lenSq;
-
     // Closest point = A + t*AB. We want dist(P, Closest).
     // Can do without writing to a vector if we want, but using tmpAP is easier if we have another scratch or reuse.
     // Let's reuse tmpAP to store (Closest - P)? No, tmpAP is (P-A).
@@ -131,17 +129,6 @@ export const distancePointToLineNoAlloc = (P, A, B, tmpAB, tmpAP) => {
     return Math.sqrt(Math.max(0, apLenSq - projLenSq));
 };
 
-/**
- * Allocation-free distance to segment.
- * 
- * @param {THREE.Vector3} P 
- * @param {THREE.Vector3} A 
- * @param {THREE.Vector3} B 
- * @param {THREE.Vector3} outClosest - Result written here (clamped)
- * @param {THREE.Vector3} tmpAB - Scratch
- * @param {THREE.Vector3} tmpAP - Scratch
- * @returns {number} Distance
- */
 /**
  * Allocation-free distance to segment.
  * 

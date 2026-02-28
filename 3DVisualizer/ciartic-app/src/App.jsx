@@ -96,15 +96,12 @@ const ZONE_DEFS = {
     foot: { key: 'foot', label: 'FOOT / TOES' },
 };
 
-// Axis Mapping Config (Swap if your GLB is rotated)
+// Axis Mapping Config
 const ANATOMY_AXES = { up: 'y', leftRight: 'x', frontBack: 'z' };
 
 
-// --- ROBUST ZONE CLASSIFIER HELPERS (SKELETON-BASED) ---
 
-const clamp01 = (v) => Math.max(0, Math.min(1, v));
-
-// 1. AXIS INFERENCE & SKELETON DEFINITION
+// --- 1. AXIS INFERENCE & SKELETON DEFINITION ---
 // ------------------------------------------------------------------
 
 // Detect Long/Width/Thick axes from bounds dimensions
@@ -127,7 +124,7 @@ const getInferredPatientAxes = (bounds) => {
 // 1.1 LANDMARK DEFINITION (Normalized 0..1 in Patient Box)
 // Coord Order: (uLong, uWidth, uThick)
 // uLong: 0=Feet, 1=Head
-// uWidth: 0.5=Midline. <0.5 Right?, >0.5 Left? (Depends on patient sign, we infer width axis)
+// uWidth: 0.5=Midline.
 const LANDMARKS_NORM = {
     // Spine
     "lowerSpine": new THREE.Vector3(0.44, 0.50, 0.50),
@@ -212,9 +209,7 @@ const landmarkLocal = (name, bounds, axes) => {
         const midMax = bounds['max' + axes.width.toUpperCase()];
         const midVal = (midMin + midMax) / 2;
 
-        // Determine Outward Direction
-        // If current > mid, add offset. If current < mid, subtract offset.
-        // This pushes "out" from center.
+        // Determine outward direction from the midline
         const currentW = local[axes.width];
         const dir = (currentW >= midVal) ? 1.0 : -1.0;
 
@@ -296,15 +291,6 @@ const classifyLocalPointBySkeleton = (pLocal, localLandmarks) => {
     return { zone: bestZone, d2: bestD2, edge: bestEdgeName };
 };
 
-// Legacy fallback for cart_x logic (mapped to new keys)
-const getAnatomyZone = (cart_x) => {
-    if (cart_x < 1.2) return ZONE_DEFS.head;
-    if (cart_x < 1.7) return ZONE_DEFS.thorax;
-    if (cart_x < 2.1) return ZONE_DEFS.abdomen;
-    if (cart_x < 2.3) return ZONE_DEFS.femur;
-    return ZONE_DEFS.tibia; // Proxy for legs
-};
-
 
 // --- MAIN APP ---
 const App = () => {
@@ -321,7 +307,6 @@ const App = () => {
     const [beamActive, setBeamActive] = useState(false);
     const [lastXray, setLastXray] = useState(null);
     const [currentAnatomy, setCurrentAnatomy] = useState("READY");
-    const [modelLoading, setModelLoading] = useState(true);
     const [debugEnabled, setDebugEnabled] = useState(false);
     const [debugReadout, setDebugReadout] = useState(null);
 
@@ -428,7 +413,6 @@ const App = () => {
 
     // --- CONTINUOUS SKELETON ATLAS X-RAY ---
     const skeletonAtlasRef = useRef(null);
-    const [atlasLoaded, setAtlasLoaded] = useState(false);
 
     // Preload the single skeleton atlas
     useEffect(() => {
@@ -436,7 +420,6 @@ const App = () => {
         img.crossOrigin = "Anonymous";
         img.onload = () => {
             skeletonAtlasRef.current = img;
-            setAtlasLoaded(true);
             console.log("Skeleton atlas loaded", img.width, img.height);
         };
         img.onerror = (e) => console.error("Failed to load skeleton atlas", e);
@@ -445,7 +428,7 @@ const App = () => {
 
 
     // --- DYNAMIC ANATOMY GENERATOR (ATLAS SKELETON) ---
-    const generateRealisticXray = (currentControls = controls, zoneKeyOverride = null) => {
+    const generateRealisticXray = (currentControls = controls) => {
         const { cart_x, cart_z, orbital_slide, wig_wag } = currentControls;
 
         // If atlas isn't ready, fallback to noise
@@ -460,14 +443,9 @@ const App = () => {
         canvas.height = size;
         const ctx = canvas.getContext('2d');
 
-        // --- 1. MAPPING PHYSICS TO IMAGE COORDINATES ---
-        // Patient Head at cart_x ~ 0.8m, Feet at ~ 2.5m
-        // Image Top (Y=0) = Head, Image Bottom (Y=H) = Feet
-        // We need to invert cart_x logic: Low X = Head (Top), High X = Feet (Bottom)?
-        // No, in our scene:
-        // Cart X=0 is near head? Let's check `getAnatomyZone` logic:
-        // cart_x < 1.2 is Head. cart_x > 2.3 is Feet.
-        // So Low X = Head (Top of Image), High X = Feet (Bottom of Image).
+        // --- 1. IMAGE COORDINATE MAPPING ---
+        // Patient Head: cart_x ~ 0.8m -> Image Top (Y=0)
+        // Patient Feet: cart_x ~ 2.5m -> Image Bottom
 
         // Geometry / FOV Calculation
         // Depth Camera (Perspective) is at Detector.
@@ -503,16 +481,11 @@ const App = () => {
         // Transform for Rotation (Orbital)
         ctx.translate(size / 2, size / 2);
 
-        // Rotation Logic:
-        // User requested 90 deg rotation.
-        // wig_wag is tilt.
+        // Apply tilt rotation (wig_wag)
         const rotation = -wig_wag + Math.PI / 2;
         ctx.rotate(rotation);
 
-        // Simulation of Orbital Rotation (Pseudo-3D effect)
-        // orbital_slide rotates C-arm around patient.
-        // AP -> Lateral.
-        // We simulate this by scaling the width of the AP atlas.
+        // Simulate Orbital Rotation (Pseudo-3D effect) by scaling atlas width
         const viewWidthScale = Math.max(0.2, Math.cos(orbital_slide));
         ctx.scale(viewWidthScale, 1.0); // Compress width
 
@@ -526,7 +499,7 @@ const App = () => {
 
         try {
             ctx.drawImage(img, sx, sy, sw, sh, -size / 2, -size / 2, size, size);
-        } catch (e) {
+        } catch {
             // Out of bounds safety
         }
 
@@ -535,16 +508,10 @@ const App = () => {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
 
         // Update UI state for Download Filename
-        // Use legacy helper to guess zone label from cart_x
-        const anatomyLabel = getAnatomyZone(cart_x).label;
+        const anatomyLabel = "XRAY";
         if (anatomyLabel !== currentAnatomy) {
             setCurrentAnatomy(anatomyLabel);
         }
-
-        // Noise
-        // Since we can't efficiently do SVG filters on canvas easily without WebGL or complex logic,
-        // let's just draw valid anatomy. The user wants "Skeleton".
-        // We can create a lightweight noise pattern if needed, but 'skeleton.png' is usually enough.
 
         // Metadata
         ctx.font = "12px monospace";
@@ -681,11 +648,12 @@ const App = () => {
     }, []);
 
     useEffect(() => {
-        if (!mountRef.current) return;
+        const currentMount = mountRef.current;
+        if (!currentMount) return;
 
         // --- SETUP ---
-        const width = mountRef.current.clientWidth;
-        const height = mountRef.current.clientHeight;
+        const width = currentMount.clientWidth;
+        const height = currentMount.clientHeight;
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0xeef2f5);
         let mounted = true; // Prevents race conditions / strict mode dual load
@@ -699,8 +667,8 @@ const App = () => {
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-        while (mountRef.current.firstChild) mountRef.current.removeChild(mountRef.current.firstChild);
-        mountRef.current.appendChild(renderer.domElement);
+        while (currentMount.firstChild) currentMount.removeChild(currentMount.firstChild);
+        currentMount.appendChild(renderer.domElement);
 
         const orbit = new OrbitControls(camera, renderer.domElement);
         orbit.enableDamping = true;
@@ -770,8 +738,7 @@ const App = () => {
 
         // --- X-RAY ROOM DOOR (West Wall) ---
         const doorGroup = new THREE.Group();
-        // Position on West Wall (X=-7.5). Shifted slightly inward (X=-7.45) to avoid z-fighting.
-        // Center of wall is Z=0. Let's put door at Z=0.
+        // Shift slightly inward to avoid z-fighting
         doorGroup.position.set(-7.45, 0, 0);
         doorGroup.rotation.y = Math.PI / 2; // Face into room
         scene.add(doorGroup);
@@ -787,7 +754,6 @@ const App = () => {
         doorGroup.add(frame);
 
         // 2. Door Panel (Lead-Lined, Sliding Style)
-        // Sliding door usually wider than opening. Let's make it cover the frame opening.
         const doorW = 2.2;
         const doorH = 2.3;
         const doorD = 0.08;
@@ -848,8 +814,6 @@ const App = () => {
         // "X-RAY IN USE" Text/Light Face
         const warnFaceGeo = new THREE.PlaneGeometry(0.5, 0.15);
         const warnFaceMat = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red = On/Warning (or darker if off)
-        // Let's make it look "off" but visible red, or "on" if beam is active? 
-        // For visualizer, maybe constant red is clearer it's an x-ray room.
         const warnFace = new THREE.Mesh(warnFaceGeo, warnFaceMat);
         warnFace.position.set(0, 0, 0.051); // On surface of box
         warnBox.add(warnFace);
@@ -922,7 +886,7 @@ const App = () => {
                 scene.add(logoPlaneIn);
             },
             undefined,
-            (error) => {
+            () => {
                 console.warn('Logo texture not found. Please add logo.png to the public folder.');
             }
         );
@@ -945,7 +909,7 @@ const App = () => {
                 scene.add(moehePlane);
             },
             undefined,
-            (error) => {
+            () => {
                 console.warn('MOEHE logo texture not found.');
             }
         );
@@ -968,7 +932,7 @@ const App = () => {
                 scene.add(warnPlane);
             },
             undefined,
-            (error) => {
+            () => {
                 console.warn('Warning sign texture not found.');
             }
         );
@@ -992,7 +956,7 @@ const App = () => {
                 scene.add(favPlane);
             },
             undefined,
-            (error) => {
+            () => {
                 console.warn('Favicon texture not found.');
             }
         );
@@ -1064,7 +1028,6 @@ const App = () => {
         const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
         const matOrange = new THREE.MeshStandardMaterial({ color: 0xff6600, roughness: 0.2 });
         const matDark = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.6 });
-        const matCarbon = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4, metalness: 0.3 });
         const matSteel = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.3, metalness: 0.6 });
         const matBlue = new THREE.MeshStandardMaterial({ color: 0x0077ff, emissive: 0x0022aa, emissiveIntensity: 0.5 });
 
@@ -1090,9 +1053,6 @@ const App = () => {
         hasRenderedInitialRef.current = true;
 
         // --- CEILING ---
-        // Room is 15m (Z-axis, North-South) x 10m (X-axis, East-West)? Wait, let's check walls.
-        // North/South walls are 15m wide (X-axis). East/West walls are 10m wide (Z-axis).
-        // Ceiling should match floor: 15x10.
         const ceilingGroup = new THREE.Group();
         ceilingGroup.position.set(0, wallHeight, 0); // Cap the room
         scene.add(ceilingGroup);
@@ -1108,8 +1068,7 @@ const App = () => {
         ceiling.receiveShadow = true;
         ceilingGroup.add(ceiling);
 
-        // Ceiling Tiles / Grid Texture (Procedural via Canvas?) or just simple geometry
-        // Let's add some "light panels" - Emissive rectangles
+        // Light Panels
         const lightPanelGeo = new THREE.PlaneGeometry(1.2, 0.6);
         const lightPanelMat = new THREE.MeshStandardMaterial({
             color: 0xffffff,
@@ -1125,9 +1084,6 @@ const App = () => {
                 panel.rotation.x = Math.PI / 2;
                 panel.position.set(x, -0.01, z); // Slightly below ceiling
                 ceilingGroup.add(panel);
-
-                // Add a local point light for each panel to make it realistic? 
-                // Too expensive for 10+ lights. Stick to the main directional light + ambient.
             }
         }
 
@@ -1241,9 +1197,7 @@ const App = () => {
                     const scale = 0.5 / maxDimF; // 50cm tall approx
                     fireModel.scale.set(scale, scale, scale);
                 }
-                // Reposition below First Aid Box (X=2, Y=1.5)
-                // 0.3m gap below box (Box Bottom ~1.3m). Top of Extinguisher at 1.0m. Center ~0.75m.
-                // Let's put it at Y=1.0 for visual balance and "0.3m away" feel
+                // Reposition below First Aid Box
                 fireModel.position.set(2, 1.0, 4.95);
                 fireModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
                 scene.add(fireModel);
@@ -1290,8 +1244,6 @@ const App = () => {
             } else {
                 console.warn("Skeleton model failed to load (likely missing extension support):", results[5].reason);
             }
-
-            setModelLoading(false);
         });
 
         // --- ROBOT CART (Procedural) ---
@@ -1420,9 +1372,7 @@ const App = () => {
 
         // BEAM PHYSICS
         // Create frustum: Source at y=0 (bottom), Detector at y=1 (top)
-        // Cylinder base (bottom) is at -0.5, top at +0.5.
-        // We want Apex at 0 (Source) and Base at 1 (Detector).
-        // RadiusTop = 1 (Detector end), RadiusBottom = 0.05 (Source end, collimated).
+        // RadiusTop = 1 (Detector end), RadiusBottom = 0.05 (Source end).
         const beamGeo = new THREE.CylinderGeometry(1, 0.05, 1, 4, 1, true);
         beamGeo.translate(0, 0.5, 0); // Shift so bottom (Source) is at 0, top (Detector) is at 1
         beamGeo.rotateY(Math.PI / 4); // Align square profile to axes
@@ -1445,7 +1395,6 @@ const App = () => {
         // Depth Visualization Setup (Quad + Shader) to convert depth to grayscale
         const depthVizScene = new THREE.Scene();
         // Ortho camera for full screen quad
-        const depthVizCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
         const depthVizMaterial = new THREE.ShaderMaterial({
             uniforms: {
                 tDepth: { value: depthRenderTarget.depthTexture },
@@ -1480,13 +1429,6 @@ const App = () => {
                      float val = 1.0 - depth; 
                      
                      // Increase Contrast using Power Curve
-                     // val is initially [0, 1]. pow(val, 3.0) pushes mid-tones darker.
-                     // Since we reduced Far to 2.5, patient (0.5m) is ~0.8.
-                     // 0.8^3 = 0.51.
-                     // Floor (1.5m) is ~0.4.
-                     // 0.4^3 = 0.06.
-                     // Contrast difference: 0.45. Huge!
-                     
                      val = pow(val, 3.0);
 
                      gl_FragColor = vec4( vec3( val ), 1.0 );
@@ -1521,13 +1463,6 @@ const App = () => {
         const yAxis = new THREE.Vector3(0, 1, 0); // Reference UP for beam
         const beamAxisWorld = new THREE.Vector3(); // For debug check
 
-        // Raycasting Allocations
-        const rayFwd = new THREE.Ray();
-        const rayBack = new THREE.Ray();
-        const boxEntry = new THREE.Vector3();
-        const boxExit = new THREE.Vector3();
-        const boxMid = new THREE.Vector3();
-        const patientBoxWorld = new THREE.Box3();
 
         // --- NEW PRE-ALLOCATIONS FOR ROBUST ZONING ---
         const localV1 = new THREE.Vector3();
@@ -1749,10 +1684,6 @@ const App = () => {
 
                         // --- 2. DEBUG READOUT ---
                         if (debugEnabledRef.current) {
-                            // (Keep existing debug readout logic...)
-                            // For brevity in replacement, I'll allow the existing readout logic to remain if I didn't cut it.
-                            // But I am replacing the block. So I must re-include it.
-
                             projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
                             const isoRayDist = ISO_WORLD.distanceTo(tempVec);
                             const t = projectPointToLineParamsInto(ISO_WORLD, v1, v2, tempVec, vSeg, vecToI);
@@ -1800,10 +1731,7 @@ const App = () => {
                     // Calculate Beam Direction (Detector -> Source)
                     dir.subVectors(v2, v1).normalize();
 
-                    // Apply Manual Offsets relative to Beam Frame? No, simplified: World Offsets + Beam Axis
-                    // Let's use the UI offsets directly in World Space relative to Detector
-                    // EXCEPT Y is along the beam?
-                    // User wants "move around". Let's give World Space offsets relative to Detector.
+                    // World Space Offsets Relative to Detector
 
                     // 1. Reset to Detector Position & Orientation
                     detAnchorRef.current.getWorldPosition(depthCameraRef.current.position);
@@ -1869,21 +1797,6 @@ const App = () => {
 
                     depthCameraRef.current.updateMatrixWorld(true);
 
-                    // (The follow-up render to depthRenderTargetRef.current in original code was redundant or debug? 
-                    // It re-renders scene to depth target. We already did that in Pass 1. 
-                    // Keeping it might be for the "readPixels" effect below? 
-                    // Actually, the readPixels reads from depthVizTargetRef.current.
-                    // So we don't need to re-render to depthRenderTargetRef.current unless that target is used elsewhere.)
-                    // The original code re-rendered to depthRenderTargetRef.current here. I'll leave it but ensure layer 0.
-
-                    /* 
-                    // Original block re-render:
-                    renderer.setRenderTarget(depthRenderTargetRef.current);
-                    renderer.render(scene, depthCameraRef.current);
-                    renderer.setRenderTarget(null); 
-                    */
-                    // Removing redundant re-render as we did Pass 1.
-
                     // Update debug helper
                     // Update debug helper
                     if (depthCameraHelperRef.current) {
@@ -1912,9 +1825,9 @@ const App = () => {
         animate();
 
         const handleResize = () => {
-            if (!mountRef.current) return;
-            const w = mountRef.current.clientWidth;
-            const h = mountRef.current.clientHeight;
+            if (!currentMount) return;
+            const w = currentMount.clientWidth;
+            const h = currentMount.clientHeight;
             camera.aspect = w / h;
             camera.updateProjectionMatrix();
             renderer.setSize(w, h);
@@ -1925,7 +1838,7 @@ const App = () => {
             mounted = false;
             cancelAnimationFrame(reqId);
             window.removeEventListener('resize', handleResize);
-            if (mountRef.current) mountRef.current.innerHTML = '';
+            if (currentMount) currentMount.innerHTML = '';
 
             renderer.dispose();
             orbit.dispose();
