@@ -721,7 +721,7 @@ const App = () => {
         // --- NAVIGATION GIZMO ---
         const viewHelper = new ViewHelper(camera, renderer.domElement);
         // Shadow the render method to force TOP-RIGHT and use our precise dimensions
-        viewHelper.render = function(renderer) {
+        viewHelper.render = function (renderer) {
             const dim = 128;
             this.quaternion.copy(camera.quaternion).invert();
             this.updateMatrixWorld();
@@ -1197,6 +1197,53 @@ const App = () => {
         stripeSouth.position.set(0, stripeY, -5.02);
         stripeSouth.rotation.y = Math.PI;
         scene.add(stripeSouth);
+
+        // --- South Wall Decorations ---
+        const southDecorGroup = new THREE.Group();
+
+        // Central panel (sleek medical display - powered off)
+        const centerPanelGeo = new THREE.PlaneGeometry(2.5, 1.5);
+        const centerPanelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.1, metalness: 0.8 });
+        const centerPanel = new THREE.Mesh(centerPanelGeo, centerPanelMat);
+        centerPanel.position.set(0, 2.5, -4.96);
+        southDecorGroup.add(centerPanel);
+
+        // Accent light strip above display
+        const lightStripGeo = new THREE.PlaneGeometry(2.5, 0.03);
+        const lightStripMat = new THREE.MeshBasicMaterial({ color: 0x4a90e2 });
+        const lightStrip = new THREE.Mesh(lightStripGeo, lightStripMat);
+        lightStrip.position.set(0, 3.3, -4.96);
+        southDecorGroup.add(lightStrip);
+
+        // Vertical acoustic panels framing the display
+        const acousticGeo = new THREE.PlaneGeometry(0.8, 2.5);
+        const acousticMat = new THREE.MeshStandardMaterial({ color: 0xdde5ed, roughness: 0.9, metalness: 0.1 });
+
+        const panelLeft = new THREE.Mesh(acousticGeo, acousticMat);
+        panelLeft.position.set(-2.5, 2.5, -4.96);
+        southDecorGroup.add(panelLeft);
+
+        const panelRight = new THREE.Mesh(acousticGeo, acousticMat);
+        panelRight.position.set(2.5, 2.5, -4.96);
+        southDecorGroup.add(panelRight);
+
+        // Add a small abstract art poster or signage placeholder on left wall
+        const decorPosterGeo = new THREE.PlaneGeometry(1.2, 1.6);
+        const decorPosterMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+        const decorPoster = new THREE.Mesh(decorPosterGeo, decorPosterMat);
+        decorPoster.position.set(-5, 2.5, -4.96);
+
+        // Poster accent frame
+        const posterFrameGeo = new THREE.PlaneGeometry(1.24, 1.64);
+        const posterFrameMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.6 });
+        const posterFrame = new THREE.Mesh(posterFrameGeo, posterFrameMat);
+        posterFrame.position.set(-5, 2.5, -4.97);
+
+        southDecorGroup.add(decorPoster);
+        southDecorGroup.add(posterFrame);
+
+        scene.add(southDecorGroup);
+
 
         // Stripe on East wall
         const stripeEast = new THREE.Mesh(new THREE.PlaneGeometry(10, stripeHeight), stripeMaterial);
