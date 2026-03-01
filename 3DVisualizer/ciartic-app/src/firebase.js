@@ -1,13 +1,13 @@
 import { initializeApp } from "firebase/app";
 
 const firebaseConfig = {
-    apiKey: "AIzaSyD8DuDyfQFH7mVoKmhtIGFIa5ePLFRk47U",
-    authDomain: "c-arm-simulation.firebaseapp.com",
-    projectId: "c-arm-simulation",
-    storageBucket: "c-arm-simulation.firebasestorage.app",
-    messagingSenderId: "476987684424",
-    appId: "1:476987684424:web:887d6cd3760f989a92ca7d",
-    measurementId: "G-SX5SSPQ7XY"
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
+    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 const app = initializeApp(firebaseConfig);

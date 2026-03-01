@@ -1,6 +1,7 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
+import { CONTROL_SPECS } from '../constants';
 
-const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArduinoConnected }) => {
+const ControllerPanel = ({ setControls, onExpose, beamActive }) => {
     const intervalRef = useRef(null);
 
     // --- CONFIGURATION ---
@@ -18,28 +19,36 @@ const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArdu
         }
     };
 
-    const startMove = (key, delta) => {
+    const startMove = (key, dir) => {
         if (beamActive) return; // Lock when exposing
         stopMove(); // Safety clear
 
-        const animate = () => {
+        let lastT = performance.now();
+
+        // Derive speed directly from CONTROL_SPECS step for consistency
+        const speedPerSec = CONTROL_SPECS[key].step * 60 * dir;
+
+        const tick = (t) => {
+            const dt = Math.min(0.05, (t - lastT) / 1000); // seconds, clamp huge jumps
+            lastT = t;
+
             setControls(prev => {
                 const next = { ...prev };
-                next[key] += delta;
+                next[key] += speedPerSec * dt;  // consistent across FPS
 
-                // Clamp Logic (Simplified from App.jsx limits)
-                // Note: ideally passed as props, but hardcoding for self-contained UI match
-                if (key === 'cart_x') next[key] = Math.max(0.8, Math.min(2.5, next[key]));
-                if (key === 'cart_z') next[key] = Math.max(-1.5, Math.min(1.5, next[key]));
-                if (key === 'lift') next[key] = Math.max(-0.5, Math.min(0.05, next[key]));
-                // Rotations are unchecked here (free spin) or clamped in App.jsx effects
-
+                // Note: Limits are robustly clamped in App.jsx via CONTROL_SPECS
                 return next;
             });
-            intervalRef.current = requestAnimationFrame(animate);
+
+            intervalRef.current = requestAnimationFrame(tick);
         };
-        intervalRef.current = requestAnimationFrame(animate);
+        intervalRef.current = requestAnimationFrame(tick);
     };
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => stopMove();
+    }, []);
 
 
     // --- STYLES ---
@@ -88,24 +97,7 @@ const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArdu
             transition: 'transform 0.1s',
             outline: 'none'
         },
-        saveBtn: {
-            padding: '5px 15px',
-            borderRadius: '15px',
-            background: 'rgba(0,0,0,0.05)',
-            border: '1px solid rgba(0,0,0,0.1)',
-            color: '#666',
-            fontWeight: 'bold',
-            fontSize: '10px',
-            letterSpacing: '0.5px',
-            cursor: beamActive ? 'not-allowed' : 'pointer',
-            marginBottom: '20px',
-            transition: 'all 0.2s',
-            outline: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            textTransform: 'uppercase'
-        },
+
         dPad: {
             position: 'relative',
             width: '120px',
@@ -198,27 +190,15 @@ const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArdu
         }
     };
 
-    // Helpers for bindBtn
-    // connectFirst = true only for Wig-Wag + Col Rot buttons
-    const bindBtn = (key, delta, connectFirst = false) => ({
-        onMouseDown: async () => {
-            if (connectFirst && ensureArduinoConnected) {
-                const ok = await ensureArduinoConnected();
-                if (!ok) return; // user cancelled or failed
-            }
-            startMove(key, delta);
-        },
+    // Helper for button events (SIM ONLY)
+    // No Arduino connection attempts from movement buttons.
+    const bindBtn = (key, dir) => ({
+        onMouseDown: () => startMove(key, dir),
         onMouseUp: stopMove,
         onMouseLeave: stopMove,
-        onTouchStart: async (e) => {
-            e.preventDefault();
-            if (connectFirst && ensureArduinoConnected) {
-                const ok = await ensureArduinoConnected();
-                if (!ok) return;
-            }
-            startMove(key, delta);
-        },
-        onTouchEnd: stopMove
+        onTouchStart: (e) => { e.preventDefault(); startMove(key, dir); },
+        onTouchEnd: stopMove,
+        onTouchCancel: stopMove
     });
 
 
@@ -234,21 +214,12 @@ const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArdu
                 {beamActive ? 'EXPOSING' : 'EXPOSE'}
             </button>
 
-            <button
-                style={styles.saveBtn}
-                onClick={onSave}
-                disabled={beamActive}
-                title="Save X-Ray as PNG"
-            >
-                SAVE X-RAY
-            </button>
-
             {/* D-Pad (Cart Movement) */}
             <div style={styles.dPad}>
-                <button style={{ ...styles.dPadBtn, top: '5px' }} {...bindBtn('cart_x', -0.01)}>⬆</button>
-                <button style={{ ...styles.dPadBtn, bottom: '5px' }} {...bindBtn('cart_x', 0.01)}>⬇</button>
-                <button style={{ ...styles.dPadBtn, left: '5px' }} {...bindBtn('cart_z', 0.01)}>⬅</button>
-                <button style={{ ...styles.dPadBtn, right: '5px' }} {...bindBtn('cart_z', -0.01)}>➡</button>
+                <button style={{ ...styles.dPadBtn, top: '5px' }} {...bindBtn('cart_x', -1)}>⬆</button>
+                <button style={{ ...styles.dPadBtn, bottom: '5px' }} {...bindBtn('cart_x', 1)}>⬇</button>
+                <button style={{ ...styles.dPadBtn, left: '5px' }} {...bindBtn('cart_z', 1)}>⬅</button>
+                <button style={{ ...styles.dPadBtn, right: '5px' }} {...bindBtn('cart_z', -1)}>➡</button>
                 <div style={styles.dPadCenter}></div>
             </div>
 
@@ -256,22 +227,22 @@ const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArdu
                 {/* Orbital (Purple) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Orbital</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', -0.006)}>↻</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', 0.006)}>↺</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', -1)}>↻</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themePurple }} {...bindBtn('orbital_slide', 1)}>↺</button>
                 </div>
 
                 {/* Wig-Wag (Yellow/Blue) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Wig-Wag</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themeYellow }} {...bindBtn('wig_wag', 0.006, true)}>Y+</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeBlue }}   {...bindBtn('wig_wag', -0.006, true)}>Y-</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeYellow }} {...bindBtn('wig_wag', 1)}>Y+</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeBlue }}   {...bindBtn('wig_wag', -1)}>Y-</button>
                 </div>
 
                 {/* Lift (Orange) */}
                 <div style={styles.col}>
                     <span style={styles.label}>Lift</span>
-                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', 0.0024)}>⬆</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', -0.0024)}>⬇</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', 1)}>⬆</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeOrange }} {...bindBtn('lift', -1)}>⬇</button>
                 </div>
             </div>
 
@@ -279,8 +250,8 @@ const ControllerPanel = ({ setControls, onExpose, onSave, beamActive, ensureArdu
             <div style={{ ...styles.col, width: '100%', alignItems: 'center' }}>
                 <span style={styles.label}>Col Rot</span>
                 <div style={{ display: 'flex', gap: '15px' }}>
-                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', -0.01, true)}>↺</button>
-                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', 0.01, true)}>↻</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', -1)}>↺</button>
+                    <button style={{ ...styles.roundBtn, ...styles.themeGrey }} {...bindBtn('column_rot', 1)}>↻</button>
                 </div>
             </div>
 

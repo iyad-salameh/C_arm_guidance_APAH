@@ -1,74 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { projectPointToLineParamsInto } from './utils/imagingGeometry.js';
 import ControllerPanel from './components/ControllerPanel';
+import { CONTROL_SPECS, DEVICE_PROFILE } from './constants';
 
 const R2D = 180 / Math.PI;
 const D2R = Math.PI / 180;
 
 // --- CONFIGURATION ---
 const PATIENT_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/patient.glb?v=3';
-const CARM_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/c-armModel.glb?v=1';
+
 const realsense_URL = 'https://raw.githubusercontent.com/iyad-salameh/C_arm_guidance_APAH/main/assets/realsense.glb?v=1';
 const ISO_WORLD = new THREE.Vector3(0, 1.45, 0);
 
-const DEVICE_PROFILE = {
-    limits: {
-        // Translations (meters)
-        lift: { min: -0.5, max: 0.05 },
-        cart_x: { min: 0.8, max: 2.5 },
-        cart_z: { min: -1.5, max: 1.5 },
-        // Rotations (degrees) - will be converted to radians for control limits
-        orbital: { min: -100, max: 100 },
-        wig_wag: { min: -23, max: 23 },    // approx +/- 0.4 rad
-        column_rot: { min: -86, max: 86 }, // approx +/- 1.5 rad
-    }
-};
 
-const CONTROL_SPECS = {
-    cart_x: {
-        label: 'Cart Long',
-        type: 'translate',
-        ...DEVICE_PROFILE.limits.cart_x,
-        step: 0.01
-    },
-    cart_z: {
-        label: 'Cart Lat',
-        type: 'translate',
-        ...DEVICE_PROFILE.limits.cart_z,
-        step: 0.01
-    },
-    lift: {
-        label: 'Lift',
-        type: 'translate',
-        ...DEVICE_PROFILE.limits.lift,
-        step: 0.001
-    },
-    orbital_slide: {
-        label: 'Orbital',
-        type: 'rotate',
-        min: DEVICE_PROFILE.limits.orbital.min * D2R,
-        max: DEVICE_PROFILE.limits.orbital.max * D2R,
-        step: 0.1 * D2R
-    },
-    wig_wag: {
-        label: 'Wig Wag',
-        type: 'rotate',
-        min: DEVICE_PROFILE.limits.wig_wag.min * D2R,
-        max: DEVICE_PROFILE.limits.wig_wag.max * D2R,
-        step: 0.1 * D2R
-    },
-    column_rot: {
-        label: 'Column Rot',
-        type: 'rotate',
-        min: DEVICE_PROFILE.limits.column_rot.min * D2R,
-        max: DEVICE_PROFILE.limits.column_rot.max * D2R,
-        step: 0.5 * D2R
-    },
-};
 
 // --- ANATOMY ZONE HELPER (single source of truth) ---
 const ZONE_DEFS = {
@@ -296,7 +245,7 @@ const classifyLocalPointBySkeleton = (pLocal, localLandmarks) => {
 const App = () => {
     const mountRef = useRef(null);
 
-    const [controls, setControls] = useState({
+    const [controls, setControlsRaw] = useState({
         lift: -0.178,
         column_rot: 0,
         wig_wag: 0,
@@ -304,6 +253,23 @@ const App = () => {
         cart_x: 1.700, // Longitudinal
         cart_z: 0.600, // Lateral (New)
     });
+
+    const setControls = (updater) => {
+        setControlsRaw(prev => {
+            const next = typeof updater === 'function' ? updater(prev) : { ...prev, ...updater };
+
+            // Enforce limits from CONTROL_SPECS
+            for (const key in CONTROL_SPECS) {
+                if (next[key] !== undefined) {
+                    const spec = CONTROL_SPECS[key];
+                    if (spec.min !== undefined && spec.max !== undefined) {
+                        next[key] = Math.max(spec.min, Math.min(spec.max, next[key]));
+                    }
+                }
+            }
+            return next;
+        });
+    };
     const [beamActive, setBeamActive] = useState(false);
     const [lastXray, setLastXray] = useState(null);
     const [currentAnatomy, setCurrentAnatomy] = useState("READY");
@@ -322,6 +288,7 @@ const App = () => {
     const serialWriterRef = useRef(null);
     const lastSentRef = useRef({ w: null, c: null, t: 0 });
     const isArduinoConnectedRef = useRef(false);
+    const [isArduinoConnectedUI, setIsArduinoConnectedUI] = useState(false);
 
 
     ////////////End of Arduino Control//////////////////
@@ -343,15 +310,19 @@ const App = () => {
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
     const sendServos = async (wigDeg, colDeg) => {
-        if (!serialWriterRef.current) return;
+        const writer = serialWriterRef.current;
+        const port = serialPortRef.current;
+
+        if (!writer || !port || !isArduinoConnectedRef.current) return;
 
         const msg = `W:${Math.round(wigDeg)} C:${Math.round(colDeg)}\n`;
         const data = new TextEncoder().encode(msg);
 
         try {
-            await serialWriterRef.current.write(data);
+            await writer.write(data);
         } catch (e) {
-            console.warn("Serial write failed", e);
+            console.warn("Serial write failed, forcing disconnect:", e);
+            await disconnectArduino(); // ensure UI + refs reset
         }
     };
     ////end of arduino part for functions/////
@@ -601,8 +572,16 @@ const App = () => {
             return false;
         }
 
-        if (isArduinoConnectedRef.current && serialWriterRef.current)
+        if (
+            isArduinoConnectedRef.current &&
+            serialWriterRef.current &&
+            serialPortRef.current &&
+            serialPortRef.current.writable
+        ) {
             return true;
+        }
+
+        await disconnectArduino(); // reset before reconnect attempt
 
         try {
             const port = await navigator.serial.requestPort();  // must be user gesture
@@ -611,12 +590,32 @@ const App = () => {
             serialPortRef.current = port;
             serialWriterRef.current = port.writable.getWriter();
             isArduinoConnectedRef.current = true;
+            setIsArduinoConnectedUI(true);
 
             console.log("Arduino connected");
             return true;
         } catch (e) {
             console.warn("Connection cancelled or failed:", e);
             return false;
+        }
+    };
+
+    const disconnectArduino = async () => {
+        try {
+            if (serialWriterRef.current) {
+                serialWriterRef.current.releaseLock();
+                serialWriterRef.current = null;
+            }
+            if (serialPortRef.current) {
+                await serialPortRef.current.close();
+                serialPortRef.current = null;
+            }
+        } catch (e) {
+            console.warn("Disconnect warning:", e);
+        } finally {
+            isArduinoConnectedRef.current = false;
+            setIsArduinoConnectedUI(false);
+            console.log("Arduino disconnected");
         }
     };
 
@@ -629,22 +628,63 @@ const App = () => {
 
     useEffect(() => {
         const handleKeyDown = (e) => {
+            // Don't spam actions if key is held down
+            if (e.repeat) return;
+
+            // Don't trigger shortcuts while typing in inputs (future-proof)
+            const tag = (e.target?.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            const k = e.key.toLowerCase();
+
+            // CONNECT/DISCONNECT ARDUINO (C)
+            if (k === 'c') {
+                // IMPORTANT: keep it a direct user gesture (keydown) -> requestPort()
+                if (isArduinoConnectedRef.current) {
+                    disconnectArduino();
+                } else {
+                    connectArduino();
+                }
+                return;
+            }
+
             // Toggle Debug
-            if (e.key.toLowerCase() === 'd') {
+            if (k === 'd') {
                 setDebugEnabled(prev => {
                     const next = !prev;
                     debugEnabledRef.current = next;
                     return next;
                 });
+                return;
             }
+
             // Toggle Landmarks
-            if (e.key.toLowerCase() === 'l') {
+            if (k === 'l') {
                 showLandmarksRef.current = !showLandmarksRef.current;
                 console.log("Landmarks Toggled:", showLandmarksRef.current);
+                return;
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    // Web Serial cleanup & disconnect listener
+    useEffect(() => {
+        if (!("serial" in navigator)) return;
+
+        const onDisconnect = (event) => {
+            if (serialPortRef.current && event.target === serialPortRef.current) {
+                disconnectArduino();
+            }
+        };
+
+        navigator.serial.addEventListener("disconnect", onDisconnect);
+        return () => {
+            navigator.serial.removeEventListener("disconnect", onDisconnect);
+            // Best-effort cleanup on unmount
+            disconnectArduino();
+        };
     }, []);
 
     useEffect(() => {
@@ -677,6 +717,26 @@ const App = () => {
         // ENABLE LAYERS for Camera (0: Default, 1: Landmarks)
         camera.layers.enable(0);
         camera.layers.enable(1);
+
+        // --- NAVIGATION GIZMO ---
+        const viewHelper = new ViewHelper(camera, renderer.domElement);
+        // Shadow the render method to force TOP-RIGHT and use our precise dimensions
+        viewHelper.render = function(renderer) {
+            const dim = 128;
+            this.quaternion.copy(camera.quaternion).invert();
+            this.updateMatrixWorld();
+
+            const canvasW = renderer.domElement.clientWidth;
+            const canvasH = renderer.domElement.clientHeight;
+
+            renderer.clearDepth();
+            renderer.setViewport(canvasW - dim, canvasH - dim, dim, dim);
+            if (!this.gizmoCamera) {
+                this.gizmoCamera = new THREE.OrthographicCamera(-2, 2, 2, -2, 0, 4);
+                this.gizmoCamera.position.set(0, 0, 2);
+            }
+            renderer.render(this, this.gizmoCamera);
+        };
 
         const ambient = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambient);
@@ -735,6 +795,59 @@ const App = () => {
         wallWest.rotation.y = Math.PI / 2;
         wallWest.receiveShadow = true;
         scene.add(wallWest);
+
+        // --- DIRECTION LABELS (FLOOR) ---
+        const createFloorLabel = (text, color, position, rotationY) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 256;
+            const context = canvas.getContext('2d');
+
+            // Transparent background
+            context.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Text styling
+            context.font = 'Bold 120px Arial';
+            context.fillStyle = color;
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+
+            // Outline for visibility
+            context.strokeStyle = 'white';
+            context.lineWidth = 10;
+            context.strokeText(text, canvas.width / 2, canvas.height / 2);
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            // High quality filtering
+            texture.minFilter = THREE.LinearFilter;
+
+            // Use a Plane so it lays flat on the ground
+            const labelGeo = new THREE.PlaneGeometry(3, 1.5);
+            const labelMat = new THREE.MeshBasicMaterial({
+                map: texture,
+                transparent: true,
+                depthWrite: false // prevent z-fighting with floor if perfectly flat
+            });
+            const labelMesh = new THREE.Mesh(labelGeo, labelMat);
+
+            // Position slightly above floor to prevent z-fighting
+            labelMesh.position.copy(position);
+
+            // Rotate to lay flat on ground, then apply specific Y rotation so it reads correctly
+            labelMesh.rotation.x = -Math.PI / 2;
+            labelMesh.rotation.z = rotationY; // Z rotates it mathematically on the plane
+
+            scene.add(labelMesh);
+        };
+
+        // Add labels near the edges of the room
+        // Readability: Bottom of text faces the center of the room.
+        createFloorLabel("NORTH", "#e74c3c", new THREE.Vector3(0, 0.02, 4.0), Math.PI);      // Red
+        createFloorLabel("SOUTH", "#3498db", new THREE.Vector3(0, 0.02, -4.0), 0);          // Blue
+        createFloorLabel("EAST", "#f1c40f", new THREE.Vector3(6.5, 0.02, 0), Math.PI / 2);  // Yellow
+        createFloorLabel("WEST", "#2ecc71", new THREE.Vector3(-6.5, 0.02, 0), -Math.PI / 2); // Green
 
         // --- X-RAY ROOM DOOR (West Wall) ---
         const doorGroup = new THREE.Group();
@@ -817,6 +930,257 @@ const App = () => {
         const warnFace = new THREE.Mesh(warnFaceGeo, warnFaceMat);
         warnFace.position.set(0, 0, 0.051); // On surface of box
         warnBox.add(warnFace);
+
+        // --- WEST WALL DECORATIONS (Windows, Curtains, Chairs) ---
+        const westDecorGroup = new THREE.Group();
+        scene.add(westDecorGroup);
+
+        // 1. Windows (Left and Right of Door)
+        const windowW = 2.4;
+        const windowH = 1.8;
+        const windowGeo = new THREE.PlaneGeometry(windowW, windowH);
+
+        // Frame and glass materials
+        const winGlassMat = new THREE.MeshPhysicalMaterial({
+            color: 0xeef7ff, metalness: 0.1, roughness: 0.1, transmission: 0.9, transparent: true, opacity: 0.4, envMapIntensity: 1.0
+        });
+        const winFrameMat = new THREE.MeshStandardMaterial({ color: 0xcdd3d8, roughness: 0.4, metalness: 0.5 });
+        const windowFrameGeo = new THREE.BoxGeometry(0.1, windowH + 0.1, windowW + 0.1); // Along Z axis
+
+        // Z positions for the two windows relative to the door at Z=0
+        [-3.2, 3.2].forEach(zPos => {
+            // Frame
+            const frame = new THREE.Mesh(windowFrameGeo, winFrameMat);
+            frame.position.set(-7.48, 1.8, zPos);
+            westDecorGroup.add(frame);
+
+            // Glass
+            const glass = new THREE.Mesh(windowGeo, winGlassMat);
+            glass.position.set(-7.44, 1.8, zPos);
+            glass.rotation.y = Math.PI / 2;
+            westDecorGroup.add(glass);
+
+            // Frame Mullions (Crossbars)
+            const hBarGeo = new THREE.BoxGeometry(0.02, 0.05, windowW);
+            const vBarGeo = new THREE.BoxGeometry(0.02, windowH, 0.05);
+
+            const hBar = new THREE.Mesh(hBarGeo, winFrameMat);
+            hBar.position.set(-7.45, 1.8, zPos);
+            westDecorGroup.add(hBar);
+
+            const vBar = new THREE.Mesh(vBarGeo, winFrameMat);
+            vBar.position.set(-7.45, 1.8, zPos);
+            westDecorGroup.add(vBar);
+
+            // 2. Clinic Style Curtains (Semi-Open)
+            // Procedural wavy curtain
+            const curtainGeo = new THREE.PlaneGeometry(1.0, windowH + 0.3, 20, 1);
+            const posAttr = curtainGeo.attributes.position;
+            for (let i = 0; i < posAttr.count; i++) {
+                const x = posAttr.getX(i);
+                // add wave
+                posAttr.setZ(i, Math.sin(x * 25) * 0.06);
+            }
+            curtainGeo.computeVertexNormals();
+
+            const curtainMat = new THREE.MeshStandardMaterial({ color: 0xddeef8, roughness: 0.9, side: THREE.DoubleSide });
+
+            // Left curtain
+            const curtainL = new THREE.Mesh(curtainGeo, curtainMat);
+            curtainL.position.set(-7.38, 1.8, zPos - windowW / 2 + 0.4);
+            curtainL.rotation.y = Math.PI / 2;
+            curtainL.scale.x = 0.5; // bunched up
+            westDecorGroup.add(curtainL);
+
+            // Right curtain
+            const curtainR = new THREE.Mesh(curtainGeo, curtainMat);
+            curtainR.position.set(-7.38, 1.8, zPos + windowW / 2 - 0.4);
+            curtainR.rotation.y = Math.PI / 2;
+            curtainR.scale.x = 0.5; // bunched up
+            westDecorGroup.add(curtainR);
+        });
+
+        // 3. Clinic Chairs (Waiting Area Style)
+        const chairMatSeat = new THREE.MeshStandardMaterial({ color: 0x34495e, roughness: 0.6 }); // Classic clinic blue
+        const chairMatFrame = new THREE.MeshStandardMaterial({ color: 0xbdc3c7, roughness: 0.3, metalness: 0.6 }); // Steel
+
+        const createChair = (x, z, rotY) => {
+            const chairGroup = new THREE.Group();
+            chairGroup.position.set(x, 0, z);
+            chairGroup.rotation.y = rotY;
+
+            // Seat using RoundedBoxGeometry
+            const seatGeo = new RoundedBoxGeometry(0.55, 0.06, 0.5, 4, 0.02);
+            const seat = new THREE.Mesh(seatGeo, chairMatSeat);
+            seat.position.set(0, 0.45, 0);
+            seat.castShadow = true;
+            chairGroup.add(seat);
+
+            // Backrest
+            const backGeo = new RoundedBoxGeometry(0.55, 0.45, 0.06, 4, 0.02);
+            const back = new THREE.Mesh(backGeo, chairMatSeat);
+            back.position.set(0, 0.7, -0.22);
+            back.rotation.x = -0.15; // ergonomic tilt
+            back.castShadow = true;
+            chairGroup.add(back);
+
+            // Legs geometry
+            const legGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.45, 8);
+            [
+                { x: 0.22, z: 0.2 }, { x: -0.22, z: 0.2 },
+                { x: 0.22, z: -0.2 }, { x: -0.22, z: -0.2 }
+            ].forEach(pos => {
+                const leg = new THREE.Mesh(legGeo, chairMatFrame);
+                leg.position.set(pos.x, 0.225, pos.z);
+                leg.castShadow = true;
+                chairGroup.add(leg);
+            });
+
+            // Armrests (Floating style)
+            const armGeo = new RoundedBoxGeometry(0.06, 0.02, 0.35, 2, 0.01);
+            const armLegGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.15, 8);
+
+            [-0.32, 0.32].forEach(xPos => {
+                const arm = new THREE.Mesh(armGeo, chairMatSeat);
+                arm.position.set(xPos, 0.65, 0.05);
+                chairGroup.add(arm);
+
+                const armLeg = new THREE.Mesh(armLegGeo, chairMatFrame);
+                armLeg.position.set(xPos, 0.55, 0.15);
+                chairGroup.add(armLeg);
+            });
+
+            return chairGroup;
+        };
+
+        // Add 6 chairs (3 on each side) facing into the room (East)
+        [-4.2, -3.4, -2.6, 2.6, 3.4, 4.2].forEach(zPos => {
+            const chair = createChair(-6.8, zPos, Math.PI / 2); // Facing East (+X direction)
+            westDecorGroup.add(chair);
+        });
+
+        // --- EAST WALL DECORATIONS (Medicine Cabinets) ---
+        const eastDecorGroup = new THREE.Group();
+        scene.add(eastDecorGroup);
+
+        // Materials (Matte, subtle clinic colors)
+        const cabBodyMat = new THREE.MeshStandardMaterial({ color: 0xecf0f1, roughness: 0.9, metalness: 0.05 }); // Off-white/light grey base
+        const cabDoorMat = new THREE.MeshStandardMaterial({ color: 0x8ab9f1, roughness: 0.85, metalness: 0.1 }); // Soft light blue doors
+        const cabDrawerMat = new THREE.MeshStandardMaterial({ color: 0x5fa1e8, roughness: 0.85, metalness: 0.1 }); // Slightly darker blue drawers
+        const cabHandleMat = new THREE.MeshStandardMaterial({ color: 0x95a5a6, roughness: 0.7, metalness: 0.3 }); // Matte grey handles
+        const cabGlassMat = new THREE.MeshPhysicalMaterial({
+            color: 0xffffff, metalness: 0.1, roughness: 0.35, transmission: 0.7, transparent: true, opacity: 0.6
+        }); // Frosted/semi-matte glass
+
+        const createCabinet = (x, z, rotY) => {
+            const cabGroup = new THREE.Group();
+            cabGroup.position.set(x, 0, z);
+            cabGroup.rotation.y = rotY;
+
+            // Main Body (2.4m high, 1.2m wide, 0.5m deep)
+            const bodyGeo = new THREE.BoxGeometry(1.2, 2.4, 0.5);
+            const body = new THREE.Mesh(bodyGeo, cabBodyMat);
+            body.position.set(0, 1.2, 0); // Bottom at Y=0
+            body.castShadow = true;
+            body.receiveShadow = true;
+            cabGroup.add(body);
+
+            // Bottom Kickplate (Darker grey)
+            const kickMat = new THREE.MeshStandardMaterial({ color: 0x7f8c8d, roughness: 0.9 });
+            const kickGeo = new THREE.BoxGeometry(1.18, 0.1, 0.48);
+            const kick = new THREE.Mesh(kickGeo, kickMat);
+            kick.position.set(0, 0.05, 0.01);
+            cabGroup.add(kick);
+
+            // Lower solid doors (Height 0.8m)
+            const doorGeo = new THREE.BoxGeometry(0.58, 0.78, 0.04);
+            // Left lower door
+            const lowerDoorL = new THREE.Mesh(doorGeo, cabDoorMat);
+            lowerDoorL.position.set(-0.3, 0.5, 0.25);
+            cabGroup.add(lowerDoorL);
+            // Right lower door
+            const lowerDoorR = new THREE.Mesh(doorGeo, cabDoorMat);
+            lowerDoorR.position.set(0.3, 0.5, 0.25);
+            cabGroup.add(lowerDoorR);
+
+            // Drawers (Middle section, Height 0.4m)
+            const drawerGeo = new THREE.BoxGeometry(0.58, 0.18, 0.04);
+            // Left drawers
+            const drawerL1 = new THREE.Mesh(drawerGeo, cabDrawerMat);
+            drawerL1.position.set(-0.3, 1.0, 0.25);
+            cabGroup.add(drawerL1);
+            const drawerL2 = new THREE.Mesh(drawerGeo, cabDrawerMat);
+            drawerL2.position.set(-0.3, 1.2, 0.25);
+            cabGroup.add(drawerL2);
+            // Right drawers
+            const drawerR1 = new THREE.Mesh(drawerGeo, cabDrawerMat);
+            drawerR1.position.set(0.3, 1.0, 0.25);
+            cabGroup.add(drawerR1);
+            const drawerR2 = new THREE.Mesh(drawerGeo, cabDrawerMat);
+            drawerR2.position.set(0.3, 1.2, 0.25);
+            cabGroup.add(drawerR2);
+
+            // Upper doors (Glass/Frosted, Height 1.0m)
+            const upperFrameGeo = new THREE.BoxGeometry(0.58, 1.05, 0.04);
+            const upperGlassGeo = new THREE.PlaneGeometry(0.46, 0.93);
+
+            // Left Upper Door Frame
+            const upperDoorL = new THREE.Mesh(upperFrameGeo, cabDoorMat);
+            upperDoorL.position.set(-0.3, 1.85, 0.25);
+            cabGroup.add(upperDoorL);
+            // Left Upper Glass (Slightly in front of frame face)
+            const glassL = new THREE.Mesh(upperGlassGeo, cabGlassMat);
+            glassL.position.set(-0.3, 1.85, 0.271);
+            cabGroup.add(glassL);
+
+            // Right Upper Door Frame
+            const upperDoorR = new THREE.Mesh(upperFrameGeo, cabDoorMat);
+            upperDoorR.position.set(0.3, 1.85, 0.25);
+            cabGroup.add(upperDoorR);
+            // Right Upper Glass
+            const glassR = new THREE.Mesh(upperGlassGeo, cabGlassMat);
+            glassR.position.set(0.3, 1.85, 0.271);
+            cabGroup.add(glassR);
+
+            // Handles (Matte Grey)
+            const handleGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.15, 8);
+
+            // Lower handles
+            const hLowL = new THREE.Mesh(handleGeo, cabHandleMat);
+            hLowL.position.set(-0.05, 0.7, 0.28);
+            cabGroup.add(hLowL);
+            const hLowR = new THREE.Mesh(handleGeo, cabHandleMat);
+            hLowR.position.set(0.05, 0.7, 0.28);
+            cabGroup.add(hLowR);
+
+            // Drawer handles
+            const drawerHandleGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.2, 8);
+            drawerHandleGeo.rotateZ(Math.PI / 2); // Horizontal
+            [-0.3, 0.3].forEach(xOff => {
+                [1.0, 1.2].forEach(yOff => {
+                    const hDraw = new THREE.Mesh(drawerHandleGeo, cabHandleMat);
+                    hDraw.position.set(xOff, yOff, 0.28);
+                    cabGroup.add(hDraw);
+                });
+            });
+
+            // Upper handles
+            const hUpL = new THREE.Mesh(handleGeo, cabHandleMat);
+            hUpL.position.set(-0.05, 1.5, 0.28);
+            cabGroup.add(hUpL);
+            const hUpR = new THREE.Mesh(handleGeo, cabHandleMat);
+            hUpR.position.set(0.05, 1.5, 0.28);
+            cabGroup.add(hUpR);
+
+            return cabGroup;
+        };
+
+        // Place a row of cabinets along the East Wall (X = 7.5). Facing West (-X) so rotY = -Math.PI / 2
+        // Wall is 10m long (-5 to 5 in Z).
+        [-3.6, -2.4, -1.2, 0, 1.2, 2.4, 3.6].forEach(zPos => {
+            const cab = createCabinet(7.25, zPos, -Math.PI / 2);
+            eastDecorGroup.add(cab);
+        });
 
         // Wall Decorations - Horizontal Stripes
         const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0xe8eef2, roughness: 0.7 });
@@ -1096,7 +1460,6 @@ const App = () => {
 
         Promise.allSettled([
             loadModel(PATIENT_URL),
-            loadModel(CARM_URL),
             loadModel(realsense_URL),
             loadModel('/fire_extinguisher/scene.gltf'),
             loadModel('/first_aid_box/scene.gltf'),
@@ -1136,24 +1499,8 @@ const App = () => {
                 console.warn("Patient model failed to load:", results[0].reason);
             }
 
-            // 2. Extra C-Arm
-            const carmGltf = getModel(1);
-            if (carmGltf) {
-                const carmModel = carmGltf.scene;
-                // cArmModelRef.current = carmModel; // Unused
-                carmModel.position.set(1.5, 0, -2.0);
-                carmModel.traverse(n => {
-                    if (n.isMesh) {
-                        n.castShadow = true;
-                        n.receiveShadow = true;
-                        n.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.2 });
-                    }
-                });
-                scene.add(carmModel);
-            }
-
-            // 3. Realsense
-            const rsGltf = getModel(2);
+            // 2. Realsense
+            const rsGltf = getModel(1);
             if (rsGltf) {
                 const rsModel = rsGltf.scene;
                 const rsBox = new THREE.Box3().setFromObject(rsModel);
@@ -1185,8 +1532,8 @@ const App = () => {
                 realsenseModelRef.current = rsModel;
             }
 
-            // 4. Fire Extinguisher
-            const fireGltf = getModel(3);
+            // 3. Fire Extinguisher
+            const fireGltf = getModel(2);
             if (fireGltf) {
                 const fireModel = fireGltf.scene;
                 const fireBox = new THREE.Box3().setFromObject(fireModel);
@@ -1203,8 +1550,8 @@ const App = () => {
                 scene.add(fireModel);
             }
 
-            // 5. First Aid Box
-            const aidGltf = getModel(4);
+            // 4. First Aid Box
+            const aidGltf = getModel(3);
             if (aidGltf) {
                 const aidModel = aidGltf.scene;
                 const aidBox = new THREE.Box3().setFromObject(aidModel);
@@ -1223,8 +1570,8 @@ const App = () => {
                 scene.add(aidModel);
             }
 
-            // 6. Female Skeleton
-            const femSkelGltf = getModel(5);
+            // 5. Female Skeleton
+            const femSkelGltf = getModel(4);
             if (femSkelGltf) {
                 const skelModel = femSkelGltf.scene;
                 const skelBox = new THREE.Box3().setFromObject(skelModel);
@@ -1242,7 +1589,7 @@ const App = () => {
                 skelModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
                 scene.add(skelModel);
             } else {
-                console.warn("Skeleton model failed to load (likely missing extension support):", results[5].reason);
+                console.warn("Skeleton model failed to load (likely missing extension support):", results[4].reason);
             }
         });
 
@@ -1815,7 +2162,22 @@ const App = () => {
                     camera.layers.disable(1);
                 }
 
+                renderer.autoClear = true;
                 renderer.render(scene, camera);
+
+                // Draw ViewHelper on top in TOP-RIGHT corner
+                const dim = 128;
+                const canvasW = renderer.domElement.clientWidth;
+                const canvasH = renderer.domElement.clientHeight;
+
+                renderer.autoClear = false;
+                // The override handles the viewport, but we can also set it here for clarity
+                viewHelper.render(renderer);
+
+                // Reset viewport to full screen for next frame using current dimensions
+                renderer.setViewport(0, 0, canvasW, canvasH);
+                renderer.autoClear = true;
+
 
             } catch (err) {
                 console.error("[animate crash]", err);
@@ -1842,6 +2204,7 @@ const App = () => {
 
             renderer.dispose();
             orbit.dispose();
+            if (viewHelper) viewHelper.dispose();
 
             if (depthRenderTargetRef.current) {
                 depthRenderTargetRef.current.dispose();
@@ -1890,6 +2253,7 @@ const App = () => {
 
     useEffect(() => {
         const interval = setInterval(() => {
+            if (!isArduinoConnectedRef.current || !serialWriterRef.current) return;
 
             const wRad = controlsRef.current.wig_wag;
             const cRad = controlsRef.current.column_rot;
@@ -2069,11 +2433,9 @@ const App = () => {
                 controls={controls}
                 setControls={setControls}
                 onExpose={handleTakeXray}
-                onSave={handleDownloadXray}
                 beamActive={beamActive}
                 ensureArduinoConnected={ensureArduinoConnected}
             />
-
 
             {debugEnabled && (
                 <div style={{ position: 'absolute', bottom: '10px', left: '10px', backgroundColor: 'rgba(0,0,0,0.8)', padding: '10px', borderRadius: '5px', color: 'white', fontSize: '10px', width: '200px' }}>
@@ -2202,6 +2564,26 @@ const App = () => {
                         boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
                     }}>D</kbd>
                     <span style={{ opacity: 0.9 }}>Toggle Debug</span>
+                </div>
+                <div style={{
+                    width: '1px',
+                    background: 'rgba(255, 255, 255, 0.2)',
+                    margin: '0 4px'
+                }}></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <kbd style={{
+                        padding: '4px 8px',
+                        background: isArduinoConnectedUI ? 'rgba(0, 255, 0, 0.3)' : 'rgba(255, 0, 0, 0.3)',
+                        borderRadius: '6px',
+                        border: isArduinoConnectedUI ? '1px solid rgba(0, 255, 0, 0.5)' : '1px solid rgba(255, 0, 0, 0.5)',
+                        fontFamily: 'monospace',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+                    }}>C</kbd>
+                    <span style={{ opacity: 0.9 }}>
+                        {isArduinoConnectedUI ? "Disconnect Arduino" : "Connect Arduino"}
+                    </span>
                 </div>
             </div>
         </div>
