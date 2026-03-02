@@ -381,6 +381,7 @@ const App = () => {
 
     const showLandmarksRef = useRef(false);
     const hasRenderedInitialRef = useRef(false);
+    const floorLabelsRef = useRef(null);
 
     // --- CONTINUOUS SKELETON ATLAS X-RAY ---
     const skeletonAtlasRef = useRef(null);
@@ -797,6 +798,11 @@ const App = () => {
         scene.add(wallWest);
 
         // --- DIRECTION LABELS (FLOOR) ---
+        const floorLabelsGroup = new THREE.Group();
+        floorLabelsGroup.visible = false;
+        scene.add(floorLabelsGroup);
+        floorLabelsRef.current = floorLabelsGroup;
+
         const createFloorLabel = (text, color, position, rotationY) => {
             const canvas = document.createElement('canvas');
             canvas.width = 512;
@@ -839,7 +845,7 @@ const App = () => {
             labelMesh.rotation.x = -Math.PI / 2;
             labelMesh.rotation.z = rotationY; // Z rotates it mathematically on the plane
 
-            scene.add(labelMesh);
+            floorLabelsGroup.add(labelMesh);
         };
 
         // Add labels near the edges of the room
@@ -1898,6 +1904,7 @@ const App = () => {
                         rayLine.visible = true;
                         closestPtMarker.visible = true;
                         connLine.visible = true;
+                        if (floorLabelsRef.current) floorLabelsRef.current.visible = true;
 
                         // Update Ray Line
                         const positions = rayLine.geometry.attributes.position.array;
@@ -1921,6 +1928,7 @@ const App = () => {
                         rayLine.visible = false;
                         closestPtMarker.visible = false;
                         connLine.visible = false;
+                        if (floorLabelsRef.current) floorLabelsRef.current.visible = false;
                     }
 
                     const now = performance.now();
