@@ -358,7 +358,7 @@ const App = () => {
 
     // Camera State
     const [camOffset, setCamOffset] = useState({ x: 0.00, y: -0.06, z: 0.00 });
-    const [camRot, setCamRot] = useState({ x: 89, y: 0, z: 180 });
+    const [camRot, setCamRot] = useState({ x: 90.0, y: 0.0, z: 180.0 });
 
     // RealSense State (Defaulted to current fixed values)
     const [rsOffset, setRsOffset] = useState({ x: 0.00, y: 0.67, z: 0.23 });
@@ -2525,14 +2525,14 @@ const App = () => {
 
                             <div style={{ borderTop: '1px solid #444', margin: '5px 0' }}></div>
 
-                            <div style={{ marginBottom: '5px' }}>Rot X: {camRot.x}°</div>
-                            <input type="range" min="-180" max="180" step="1" value={camRot.x} onChange={(e) => setCamRot({ ...camRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>Rot X: {camRot.x.toFixed(1)}°</div>
+                            <input type="range" min="-180" max="180" step="0.5" value={camRot.x} onChange={(e) => setCamRot({ ...camRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                            <div style={{ marginBottom: '5px' }}>Rot Y: {camRot.y}°</div>
-                            <input type="range" min="-180" max="180" step="1" value={camRot.y} onChange={(e) => setCamRot({ ...camRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>Rot Y: {camRot.y.toFixed(1)}°</div>
+                            <input type="range" min="-180" max="180" step="0.5" value={camRot.y} onChange={(e) => setCamRot({ ...camRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                            <div style={{ marginBottom: '5px' }}>Rot Z: {camRot.z}°</div>
-                            <input type="range" min="-180" max="180" step="1" value={camRot.z} onChange={(e) => setCamRot({ ...camRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>Rot Z: {camRot.z.toFixed(1)}°</div>
+                            <input type="range" min="-180" max="180" step="0.5" value={camRot.z} onChange={(e) => setCamRot({ ...camRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
                         </>
                     ) : (
                         <>
@@ -2547,14 +2547,14 @@ const App = () => {
 
                             <div style={{ borderTop: '1px solid #444', margin: '5px 0' }}></div>
 
-                            <div style={{ marginBottom: '5px' }}>RS Rot X: {rsRot.x}°</div>
-                            <input type="range" min="-180" max="180" step="1" value={rsRot.x} onChange={(e) => setRsRot({ ...rsRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>RS Rot X: {rsRot.x.toFixed(1)}°</div>
+                            <input type="range" min="-180" max="180" step="0.5" value={rsRot.x} onChange={(e) => setRsRot({ ...rsRot, x: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                            <div style={{ marginBottom: '5px' }}>RS Rot Y: {rsRot.y}°</div>
-                            <input type="range" min="-180" max="180" step="1" value={rsRot.y} onChange={(e) => setRsRot({ ...rsRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>RS Rot Y: {rsRot.y.toFixed(1)}°</div>
+                            <input type="range" min="-180" max="180" step="0.5" value={rsRot.y} onChange={(e) => setRsRot({ ...rsRot, y: parseFloat(e.target.value) })} style={{ width: '100%' }} />
 
-                            <div style={{ marginBottom: '5px' }}>RS Rot Z: {rsRot.z}°</div>
-                            <input type="range" min="-180" max="180" step="1" value={rsRot.z} onChange={(e) => setRsRot({ ...rsRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                            <div style={{ marginBottom: '5px' }}>RS Rot Z: {rsRot.z.toFixed(1)}°</div>
+                            <input type="range" min="-180" max="180" step="0.5" value={rsRot.z} onChange={(e) => setRsRot({ ...rsRot, z: parseFloat(e.target.value) })} style={{ width: '100%' }} />
                         </>
                     )}
                 </div>
