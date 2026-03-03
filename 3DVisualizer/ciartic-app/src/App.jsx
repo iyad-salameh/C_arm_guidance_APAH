@@ -6,6 +6,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { projectPointToLineParamsInto } from './utils/imagingGeometry.js';
 import ControllerPanel from './components/ControllerPanel';
+import Instructions from './components/Instructions';
 import { CONTROL_SPECS, DEVICE_PROFILE } from './constants';
 
 const R2D = 180 / Math.PI;
@@ -275,6 +276,7 @@ const App = () => {
     const [currentAnatomy, setCurrentAnatomy] = useState("READY");
     const [debugEnabled, setDebugEnabled] = useState(false);
     const [debugReadout, setDebugReadout] = useState(null);
+    const [showInstructions, setShowInstructions] = useState(true);
 
     const debugEnabledRef = useRef(false);
     const lastDebugUpdateRef = useRef(0);
@@ -663,6 +665,15 @@ const App = () => {
             if (k === 'l') {
                 showLandmarksRef.current = !showLandmarksRef.current;
                 console.log("Landmarks Toggled:", showLandmarksRef.current);
+                return;
+            }
+
+            // Toggle Patient
+            if (k === 'p') {
+                if (patientModelRef.current) {
+                    patientModelRef.current.visible = !patientModelRef.current.visible;
+                    console.log("Patient Toggled:", patientModelRef.current.visible);
+                }
                 return;
             }
         };
@@ -2386,6 +2397,7 @@ const App = () => {
 
     return (
         <div style={containerStyle}>
+            {showInstructions && <Instructions onClose={() => setShowInstructions(false)} />}
             <div ref={mountRef} style={{ width: '100%', height: '100%' }} />
 
             {debugEnabled && debugReadout && (
