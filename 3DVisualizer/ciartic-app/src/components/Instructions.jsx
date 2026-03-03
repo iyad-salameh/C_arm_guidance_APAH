@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import simOverviewImg from '../public/sim_overview.png';
 import navigateImg from '../public/navigate.png';
 import controlsPanelImg from '../public/controls_panel.png';
-import fluoroViewImg from '../public/fluoro_view.png';
+import realXrayExposeImg from '../public/real-xray-expose.png';
 import keyboardLegendImg from '../public/keyboard_legend.png';
+import debugModeImg from '../public/debugMode.png';
+import debugOverlayImg from '../public/debugOverlay.png';
 
 const Instructions = ({ onClose }) => {
     const [page, setPage] = useState(0);
@@ -22,17 +24,22 @@ const Instructions = ({ onClose }) => {
         {
             title: "C-Arm Controls",
             image: controlsPanelImg,
-            content: "Use the control panel on the right to adjust the C-arm positioning.\nLift: Adjust height\nColumn Rot: Rotate the main column\nWigWag & Orbital: Angle the detector\nArrows: Move the machine along the floor."
+            content: "Use the control panel on the right to adjust the C-arm positioning.\nArrows: Move the machine along the floor.\nLift: Adjust height.\nWigWag: Angle the detector horizontally.\nOrbital: Angle the detector vertically.\nColumn Rot: Rotate the main column.\nExpose: Capture an X-ray image."
         },
         {
             title: "Taking X-Rays",
-            image: fluoroViewImg,
+            image: realXrayExposeImg,
             content: "Once the patient is in the beam path, click the orange EXPOSE button on the control panel to capture an image. The live fluoroscopy view will update with the simulated X-ray."
         },
         {
             title: "Keyboard Shortcuts",
             image: keyboardLegendImg,
-            content: "Press P to toggle Patient visibility.\nPress L to toggle skeleton landmarks.\nPress D to toggle the Debug view & floor labels.\nPress C to connect/disconnect the Arduino."
+            content: "Press P to toggle Patient visibility.\nPress L to toggle skeleton landmarks.\nPress D to toggle the Debug view & floor labels.\nPress I to toggle this Instructions canvas.\nPress C to connect/disconnect the Arduino."
+        },
+        {
+            title: "Debugging & Calibration",
+            images: [debugModeImg, debugOverlayImg],
+            content: "Press D to toggle Debug Mode. This helps with calibration by showing real-time spatial positioning, XYZ coordinate lines, and floor boundaries.\n\nUse the CAM and RS buttons on the debug overlay (bottom-left) to manually adjust the Camera and RealSense depth sensor offsets and rotations."
         }
     ];
 
@@ -153,7 +160,7 @@ const Instructions = ({ onClose }) => {
                     </div>
 
                     {/* Right: Image Content (if exists) */}
-                    {current.image && (
+                    {(current.image || current.images) && (
                         <div style={{
                             flex: '1.2', // Image gets slightly more space
                             borderRadius: '16px',
@@ -162,20 +169,37 @@ const Instructions = ({ onClose }) => {
                             border: '1px solid rgba(255, 255, 255, 0.05)',
                             boxShadow: shadowInner,
                             display: 'flex',
+                            flexDirection: 'row',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            padding: '16px'
+                            padding: '16px',
+                            gap: '12px'
                         }}>
-                            <img
-                                src={current.image}
-                                alt={current.title}
-                                style={{
-                                    maxWidth: '100%',
-                                    maxHeight: '100%',
-                                    objectFit: 'contain',
-                                    borderRadius: '8px'
-                                }}
-                            />
+                            {current.image && (
+                                <img
+                                    src={current.image}
+                                    alt={current.title}
+                                    style={{
+                                        maxWidth: '100%',
+                                        maxHeight: '100%',
+                                        objectFit: 'contain',
+                                        borderRadius: '8px'
+                                    }}
+                                />
+                            )}
+                            {current.images && current.images.map((img, idx) => (
+                                <img
+                                    key={idx}
+                                    src={img}
+                                    alt={`${current.title} ${idx + 1}`}
+                                    style={{
+                                        width: `${Math.floor(100 / current.images.length)}%`,
+                                        height: '100%',
+                                        objectFit: 'contain',
+                                        borderRadius: '8px'
+                                    }}
+                                />
+                            ))}
                         </div>
                     )}
                 </div>
