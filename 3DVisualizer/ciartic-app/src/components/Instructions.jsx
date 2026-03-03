@@ -6,6 +6,7 @@ import realXrayExposeImg from '../public/real-xray-expose.png';
 import keyboardLegendImg from '../public/keyboard_legend.png';
 import debugModeImg from '../public/debugMode.png';
 import debugOverlayImg from '../public/debugOverlay.png';
+import prototypeImg from '../public/prototype.png';
 
 const Instructions = ({ onClose }) => {
     const [page, setPage] = useState(0);
@@ -24,7 +25,17 @@ const Instructions = ({ onClose }) => {
         {
             title: "C-Arm Controls",
             image: controlsPanelImg,
-            content: "Use the control panel on the right to adjust the C-arm positioning.\nArrows: Move the machine along the floor.\nLift: Adjust height.\nWigWag: Angle the detector horizontally.\nOrbital: Angle the detector vertically.\nColumn Rot: Rotate the main column.\nExpose: Capture an X-ray image."
+            content: (
+                <>
+                    Use the control panel on the right to adjust the C-arm positioning.<br />
+                    <strong>Arrows:</strong> Move the machine along the floor.<br />
+                    <strong>Lift:</strong> Adjust height.<br />
+                    <strong>WigWag:</strong> Angle the detector horizontally.<br />
+                    <strong>Orbital:</strong> Angle the detector vertically.<br />
+                    <strong>Column Rot:</strong> Rotate the main column.<br />
+                    <strong>Expose:</strong> Capture an X-ray image.
+                </>
+            )
         },
         {
             title: "Taking X-Rays",
@@ -35,6 +46,11 @@ const Instructions = ({ onClose }) => {
             title: "Keyboard Shortcuts",
             image: keyboardLegendImg,
             content: "Press P to toggle Patient visibility.\nPress L to toggle skeleton landmarks.\nPress D to toggle the Debug view & floor labels.\nPress I to toggle this Instructions canvas.\nPress C to connect/disconnect the Arduino."
+        },
+        {
+            title: "Hardware Connection",
+            image: prototypeImg,
+            content: "To control the simulation using the physical C-arm prototype, connect the Arduino to your computer via a USB cable (this is a must).\n\nOnce connected via USB, press the C button on your keyboard to establish the connection."
         },
         {
             title: "Debugging & Calibration",
