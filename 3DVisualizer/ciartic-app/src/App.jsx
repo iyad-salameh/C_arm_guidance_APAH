@@ -668,6 +668,12 @@ const App = () => {
                 return;
             }
 
+            // Toggle Instructions
+            if (k === 'i') {
+                setShowInstructions(prev => !prev);
+                return;
+            }
+
             // Toggle Patient
             if (k === 'p') {
                 if (patientModelRef.current) {
@@ -2601,6 +2607,24 @@ const App = () => {
                 pointerEvents: 'none',
                 zIndex: 1000
             }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <kbd style={{
+                        padding: '4px 8px',
+                        background: 'rgba(255, 255, 255, 0.2)',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(255, 255, 255, 0.3)',
+                        fontFamily: 'monospace',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+                    }}>I</kbd>
+                    <span style={{ opacity: 0.9 }}>Instructions</span>
+                </div>
+                <div style={{
+                    width: '1px',
+                    background: 'rgba(255, 255, 255, 0.2)',
+                    margin: '0 4px'
+                }}></div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <kbd style={{
                         padding: '4px 8px',

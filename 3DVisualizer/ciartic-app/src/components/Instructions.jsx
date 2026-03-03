@@ -1,4 +1,9 @@
 import React, { useState } from 'react';
+import simOverviewImg from '../public/sim_overview.png';
+import navigateImg from '../public/navigate.png';
+import controlsPanelImg from '../public/controls_panel.png';
+import fluoroViewImg from '../public/fluoro_view.png';
+import keyboardLegendImg from '../public/keyboard_legend.png';
 
 const Instructions = ({ onClose }) => {
     const [page, setPage] = useState(0);
@@ -6,22 +11,27 @@ const Instructions = ({ onClose }) => {
     const pages = [
         {
             title: "Welcome to CIARTIC Simulation",
+            image: simOverviewImg,
             content: "This is a 3D medical simulation for C-arm guidance. You can use this app to simulate X-ray imaging and positioning."
         },
         {
             title: "Camera & Navigation",
+            image: navigateImg,
             content: "Use your mouse to look around.\nLeft Click + Drag: Rotate camera\nRight Click + Drag: Pan camera\nScroll Wheel: Zoom in/out"
         },
         {
             title: "C-Arm Controls",
+            image: controlsPanelImg,
             content: "Use the control panel on the right to adjust the C-arm positioning.\nLift: Adjust height\nColumn Rot: Rotate the main column\nWigWag & Orbital: Angle the detector\nArrows: Move the machine along the floor."
         },
         {
             title: "Taking X-Rays",
+            image: fluoroViewImg,
             content: "Once the patient is in the beam path, click the orange EXPOSE button on the control panel to capture an image. The live fluoroscopy view will update with the simulated X-ray."
         },
         {
             title: "Keyboard Shortcuts",
+            image: keyboardLegendImg,
             content: "Press P to toggle Patient visibility.\nPress L to toggle skeleton landmarks.\nPress D to toggle the Debug view & floor labels.\nPress C to connect/disconnect the Arduino."
         }
     ];
@@ -80,8 +90,9 @@ const Instructions = ({ onClose }) => {
                 backgroundColor: bgDark,
                 borderRadius: '24px',
                 padding: '40px',
-                width: '500px',
-                maxWidth: '90vw',
+                width: '850px', // Wider fixed size
+                maxWidth: '95vw',
+                height: '500px', // Fixed height
                 color: textPrimary,
                 fontFamily: 'sans-serif',
                 boxShadow: shadowOuter,
@@ -91,7 +102,7 @@ const Instructions = ({ onClose }) => {
                 gap: '24px'
             }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h2 style={{ margin: 0, fontSize: '24px', fontWeight: '800', color: '#4a90e2', textShadow: '1px 1px 3px rgba(0,0,0,0.5)' }}>
+                    <h2 style={{ margin: 0, fontSize: '26px', fontWeight: '800', color: '#4a90e2', textShadow: '1px 1px 3px rgba(0,0,0,0.5)' }}>
                         {current.title}
                     </h2>
                     <button
@@ -120,20 +131,53 @@ const Instructions = ({ onClose }) => {
                     </button>
                 </div>
 
-                <div style={{
-                    fontSize: '16px',
-                    lineHeight: '1.7',
-                    minHeight: '140px',
-                    whiteSpace: 'pre-line',
-                    color: '#e2e8f0',
-                    padding: '24px',
-                    borderRadius: '16px',
-                    backgroundColor: bgDark,
-                    border: '1px solid rgba(255, 255, 255, 0.02)',
-                    boxShadow: shadowInner,
-                    fontWeight: '500'
-                }}>
-                    {current.content}
+                {/* Main Content Area - Side by Side Flex */}
+                <div style={{ display: 'flex', flex: 1, gap: '24px', minHeight: '0' }}>
+
+                    {/* Left: Text Content */}
+                    <div style={{
+                        flex: '1',
+                        fontSize: '17px',
+                        lineHeight: '1.8',
+                        whiteSpace: 'pre-line',
+                        color: '#e2e8f0',
+                        padding: '24px',
+                        borderRadius: '16px',
+                        backgroundColor: bgDark,
+                        border: '1px solid rgba(255, 255, 255, 0.02)',
+                        boxShadow: shadowInner,
+                        fontWeight: '500',
+                        overflowY: 'auto'
+                    }}>
+                        {current.content}
+                    </div>
+
+                    {/* Right: Image Content (if exists) */}
+                    {current.image && (
+                        <div style={{
+                            flex: '1.2', // Image gets slightly more space
+                            borderRadius: '16px',
+                            overflow: 'hidden',
+                            backgroundColor: bgDark,
+                            border: '1px solid rgba(255, 255, 255, 0.05)',
+                            boxShadow: shadowInner,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '16px'
+                        }}>
+                            <img
+                                src={current.image}
+                                alt={current.title}
+                                style={{
+                                    maxWidth: '100%',
+                                    maxHeight: '100%',
+                                    objectFit: 'contain',
+                                    borderRadius: '8px'
+                                }}
+                            />
+                        </div>
+                    )}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
@@ -187,7 +231,7 @@ const Instructions = ({ onClose }) => {
                     </div>
                 </div>
             </div>
-        </div>
+        </div >
     );
 };
 
