@@ -18,7 +18,7 @@ const Instructions = ({ onClose }) => {
         },
         {
             title: "Taking X-Rays",
-            content: "Once the patient is in the beam path, click the green 'TAKE X-RAY' button on the control panel to capture an image. The live fluoroscopy view will update with the simulated X-ray."
+            content: "Once the patient is in the beam path, click the orange 'EXPOSE' button on the control panel to capture an image. The live fluoroscopy view will update with the simulated X-ray."
         },
         {
             title: "Keyboard Shortcuts",
