@@ -6,8 +6,8 @@ export const DEVICE_PROFILE = {
     limits: {
         // Translations (meters)
         lift: { min: -0.5, max: 0.05 },
-        cart_x: { min: 0.8, max: 2.5 },
-        cart_z: { min: -1.5, max: 1.5 },
+        cart_x: { min: 1.4, max: 2.5 },
+        cart_z: { min: -0.7, max: 0.8 },
         // Rotations (degrees) - will be converted to radians for control limits
         orbital: { min: -100, max: 100 },
         wig_wag: { min: -23, max: 23 },    // approx +/- 0.4 rad
