@@ -6,7 +6,7 @@ import realXrayExposeImg from '../public/real-xray-expose.png';
 import keyboardLegendImg from '../public/keyboard_legend.png';
 import debugModeImg from '../public/debugMode.png';
 import debugOverlayImg from '../public/debugOverlay.png';
-import prototypeImg from '../public/prototype.png';
+import prototypeImg from '../public/movePhysicalModel.gif';
 
 const Instructions = ({ onClose }) => {
     const [page, setPage] = useState(0);

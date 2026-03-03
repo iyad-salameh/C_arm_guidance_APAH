@@ -553,9 +553,126 @@ const App = () => {
         }
     };
 
+    // Configurable rigid transform for CT to World alignment. Default: Identity
+    // Modify this if your CT volume is not at the world origin or has a different orientation.
+    const T_ct_world = new THREE.Matrix4().identity();
+
+    const captureExposureGeometry = (shotControls) => {
+        if (!srcAnchorRef.current || !detAnchorRef.current) return;
+
+        srcAnchorRef.current.updateMatrixWorld(true);
+        detAnchorRef.current.updateMatrixWorld(true);
+
+        const srcPos = new THREE.Vector3();
+        srcAnchorRef.current.getWorldPosition(srcPos);
+
+        const detPos = new THREE.Vector3();
+        const detQuat = new THREE.Quaternion();
+        detAnchorRef.current.getWorldPosition(detPos);
+        detAnchorRef.current.getWorldQuaternion(detQuat);
+
+        // 1. Intrinsics
+        const sid_m = srcPos.distanceTo(detPos);
+        const sdd_mm = sid_m * 1000.0;
+
+        const img_width_px = 512;
+        const img_height_px = 512;
+        const x0_px = img_width_px / 2.0;
+        const y0_px = img_height_px / 2.0;
+
+        // Calculate physical pixel spacing at the detector
+        const fov_deg = depthCameraRef.current ? depthCameraRef.current.fov : 58;
+        const detector_height_m = 2.0 * sid_m * Math.tan((fov_deg / 2) * (Math.PI / 180));
+        const dely_mm = (detector_height_m / img_height_px) * 1000.0;
+        const delx_mm = dely_mm; // Assuming square pixels
+
+        // 2. Extrinsics (Camera Coordinate Frame)
+        // DiffDRR uses right-handed coordinates: +Z forward, +X right, +Y down
+        const Z_c = new THREE.Vector3().subVectors(detPos, srcPos).normalize();
+
+        // Let's get the absolute right direction from the detector
+        const X_c = new THREE.Vector3(1, 0, 0).applyQuaternion(detQuat).normalize();
+        // Since DiffDRR wants +X right, +Y down, +Z forward:
+        // Y_c = Z_c x X_c
+        const Y_c = new THREE.Vector3().crossVectors(Z_c, X_c).normalize();
+        // Recalculate X_c to ensure perfectly orthogonal frame
+        X_c.crossVectors(Y_c, Z_c).normalize();
+
+        const T_cam2world = new THREE.Matrix4().makeBasis(X_c, Y_c, Z_c);
+        T_cam2world.setPosition(srcPos);
+
+        // Incorporate CT alignment
+        // T_cam2ct = T_world2ct * T_cam2world 
+        // We have T_ct_world, so T_world2ct = inverse(T_ct_world)
+        const T_world_ct = T_ct_world.clone().invert();
+        const T_cam2ct = new THREE.Matrix4().multiplyMatrices(T_world_ct, T_cam2world);
+        const T_ct2cam = T_cam2ct.clone().invert();
+
+        // Prepare row data
+        const T_ct2cam_els = T_ct2cam.elements; // Column-major array in Three.js
+        const T_cam2ct_els = T_cam2ct.elements;
+
+        const row = [
+            sdd_mm.toFixed(6), img_width_px, img_height_px, delx_mm.toFixed(6), dely_mm.toFixed(6), x0_px.toFixed(6), y0_px.toFixed(6),
+
+            // Output Row-Major (Three.js elements are column-major, so we transpose manually for CSV consistency)
+            // T_ct2cam:
+            T_ct2cam_els[0].toFixed(6), T_ct2cam_els[4].toFixed(6), T_ct2cam_els[8].toFixed(6), T_ct2cam_els[12].toFixed(6),
+            T_ct2cam_els[1].toFixed(6), T_ct2cam_els[5].toFixed(6), T_ct2cam_els[9].toFixed(6), T_ct2cam_els[13].toFixed(6),
+            T_ct2cam_els[2].toFixed(6), T_ct2cam_els[6].toFixed(6), T_ct2cam_els[10].toFixed(6), T_ct2cam_els[14].toFixed(6),
+            T_ct2cam_els[3].toFixed(6), T_ct2cam_els[7].toFixed(6), T_ct2cam_els[11].toFixed(6), T_ct2cam_els[15].toFixed(6),
+
+            // T_cam2ct:
+            T_cam2ct_els[0].toFixed(6), T_cam2ct_els[4].toFixed(6), T_cam2ct_els[8].toFixed(6), T_cam2ct_els[12].toFixed(6),
+            T_cam2ct_els[1].toFixed(6), T_cam2ct_els[5].toFixed(6), T_cam2ct_els[9].toFixed(6), T_cam2ct_els[13].toFixed(6),
+            T_cam2ct_els[2].toFixed(6), T_cam2ct_els[6].toFixed(6), T_cam2ct_els[10].toFixed(6), T_cam2ct_els[14].toFixed(6),
+            T_cam2ct_els[3].toFixed(6), T_cam2ct_els[7].toFixed(6), T_cam2ct_els[11].toFixed(6), T_cam2ct_els[15].toFixed(6),
+
+            // Base Tracking Metadata
+            (shotControls.lift || 0).toFixed(6), (shotControls.cart_x || 0).toFixed(6), (shotControls.cart_z || 0).toFixed(6),
+            (shotControls.orbital_slide || 0).toFixed(6), (shotControls.wig_wag || 0).toFixed(6), (shotControls.column_rot || 0).toFixed(6)
+        ];
+
+        const headers = [
+            'sdd_mm', 'img_width_px', 'img_height_px', 'delx_mm', 'dely_mm', 'x0_px', 'y0_px',
+            'matrix_ct2cam_00', 'matrix_ct2cam_01', 'matrix_ct2cam_02', 'matrix_ct2cam_03',
+            'matrix_ct2cam_10', 'matrix_ct2cam_11', 'matrix_ct2cam_12', 'matrix_ct2cam_13',
+            'matrix_ct2cam_20', 'matrix_ct2cam_21', 'matrix_ct2cam_22', 'matrix_ct2cam_23',
+            'matrix_ct2cam_30', 'matrix_ct2cam_31', 'matrix_ct2cam_32', 'matrix_ct2cam_33',
+            'matrix_cam2ct_00', 'matrix_cam2ct_01', 'matrix_cam2ct_02', 'matrix_cam2ct_03',
+            'matrix_cam2ct_10', 'matrix_cam2ct_11', 'matrix_cam2ct_12', 'matrix_cam2ct_13',
+            'matrix_cam2ct_20', 'matrix_cam2ct_21', 'matrix_cam2ct_22', 'matrix_cam2ct_23',
+            'matrix_cam2ct_30', 'matrix_cam2ct_31', 'matrix_cam2ct_32', 'matrix_cam2ct_33',
+            'lift', 'cart_x', 'cart_z', 'orbital_slide_rad', 'wig_wag_rad', 'column_rot_rad'
+        ];
+
+        exportDiffDRRCSVRow(headers, row);
+    };
+
+    const exportDiffDRRCSVRow = (headers, row) => {
+        const csvContent = headers.join(',') + '\n' + row.join(',');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+
+        const now = new Date();
+        const pad = (n) => n.toString().padStart(2, '0');
+        const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+        link.setAttribute('download', `diffdrr_exposure_${timestamp}.csv`);
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
     const handleTakeXray = () => {
         const shotControls = { ...controls };
         const regionKeyAtShot = beamHitRef.current ? beamZoneKeyRef.current : "miss";
+
+        captureExposureGeometry(shotControls);
 
         setBeamActive(true);
         setTimeout(() => {
