@@ -555,7 +555,11 @@ const App = () => {
 
     // Configurable rigid transform for CT to World alignment. Default: Identity
     // Modify this if your CT volume is not at the world origin or has a different orientation.
-    const T_ct_world = new THREE.Matrix4().identity();
+    // Three.js simulator world uses +Y UP. 
+    // CT axis conventions are defined externally by the NIfTI affine. 
+    // DiffDRR pipeline must map CT voxel coordinates to this CT frame using the NIfTI affine.
+    const T_CT_to_world = new THREE.Matrix4().identity();
+    const T_world_to_CT = T_CT_to_world.clone().invert();
 
     const captureExposureGeometry = (shotControls) => {
         if (!srcAnchorRef.current || !detAnchorRef.current) return;
@@ -602,31 +606,43 @@ const App = () => {
         T_cam2world.setPosition(srcPos);
 
         // Incorporate CT alignment
-        // T_cam2ct = T_world2ct * T_cam2world 
-        // We have T_ct_world, so T_world2ct = inverse(T_ct_world)
-        const T_world_ct = T_ct_world.clone().invert();
-        const T_cam2ct = new THREE.Matrix4().multiplyMatrices(T_world_ct, T_cam2world);
-        const T_ct2cam = T_cam2ct.clone().invert();
+        // T_cam_to_CT = T_world_to_CT * T_cam_to_world 
+        const T_cam_to_CT = new THREE.Matrix4().multiplyMatrices(T_world_to_CT, T_cam2world);
+        
+        // Convert positions from world (meters) to CT (millimeters)
+        const srcPosCT_mm = srcPos.clone().applyMatrix4(T_world_to_CT).multiplyScalar(1000.0);
+        const detPosCT_mm = detPos.clone().applyMatrix4(T_world_to_CT).multiplyScalar(1000.0);
 
         // Prepare row data
-        const T_ct2cam_els = T_ct2cam.elements; // Column-major array in Three.js
-        const T_cam2ct_els = T_cam2ct.elements;
+        const T_CT_to_world_els = T_CT_to_world.elements; // Column-major array in Three.js
+        const T_cam_to_CT_els = T_cam_to_CT.elements;
+
+        const timestamp_iso = new Date().toISOString();
+        const units = "mm";
+        const coordinate_frame = "CT";
+        const ct_volume_path = "public/CT/case-112016_BONE_H-N-UXT_3X3.nii.gz";
 
         const row = [
+            timestamp_iso, units, coordinate_frame, ct_volume_path,
+
+            // T_CT_to_world (Row-Major format)
+            T_CT_to_world_els[0].toFixed(6), T_CT_to_world_els[4].toFixed(6), T_CT_to_world_els[8].toFixed(6), T_CT_to_world_els[12].toFixed(6),
+            T_CT_to_world_els[1].toFixed(6), T_CT_to_world_els[5].toFixed(6), T_CT_to_world_els[9].toFixed(6), T_CT_to_world_els[13].toFixed(6),
+            T_CT_to_world_els[2].toFixed(6), T_CT_to_world_els[6].toFixed(6), T_CT_to_world_els[10].toFixed(6), T_CT_to_world_els[14].toFixed(6),
+            T_CT_to_world_els[3].toFixed(6), T_CT_to_world_els[7].toFixed(6), T_CT_to_world_els[11].toFixed(6), T_CT_to_world_els[15].toFixed(6),
+
+            // T_cam_to_CT (Row-Major format)
+            T_cam_to_CT_els[0].toFixed(6), T_cam_to_CT_els[4].toFixed(6), T_cam_to_CT_els[8].toFixed(6), T_cam_to_CT_els[12].toFixed(6),
+            T_cam_to_CT_els[1].toFixed(6), T_cam_to_CT_els[5].toFixed(6), T_cam_to_CT_els[9].toFixed(6), T_cam_to_CT_els[13].toFixed(6),
+            T_cam_to_CT_els[2].toFixed(6), T_cam_to_CT_els[6].toFixed(6), T_cam_to_CT_els[10].toFixed(6), T_cam_to_CT_els[14].toFixed(6),
+            T_cam_to_CT_els[3].toFixed(6), T_cam_to_CT_els[7].toFixed(6), T_cam_to_CT_els[11].toFixed(6), T_cam_to_CT_els[15].toFixed(6),
+
+            // Source and Detector positions in CT frame (mm)
+            srcPosCT_mm.x.toFixed(6), srcPosCT_mm.y.toFixed(6), srcPosCT_mm.z.toFixed(6),
+            detPosCT_mm.x.toFixed(6), detPosCT_mm.y.toFixed(6), detPosCT_mm.z.toFixed(6),
+
+            // Image properties
             sdd_mm.toFixed(6), img_width_px, img_height_px, delx_mm.toFixed(6), dely_mm.toFixed(6), x0_px.toFixed(6), y0_px.toFixed(6),
-
-            // Output Row-Major (Three.js elements are column-major, so we transpose manually for CSV consistency)
-            // T_ct2cam:
-            T_ct2cam_els[0].toFixed(6), T_ct2cam_els[4].toFixed(6), T_ct2cam_els[8].toFixed(6), T_ct2cam_els[12].toFixed(6),
-            T_ct2cam_els[1].toFixed(6), T_ct2cam_els[5].toFixed(6), T_ct2cam_els[9].toFixed(6), T_ct2cam_els[13].toFixed(6),
-            T_ct2cam_els[2].toFixed(6), T_ct2cam_els[6].toFixed(6), T_ct2cam_els[10].toFixed(6), T_ct2cam_els[14].toFixed(6),
-            T_ct2cam_els[3].toFixed(6), T_ct2cam_els[7].toFixed(6), T_ct2cam_els[11].toFixed(6), T_ct2cam_els[15].toFixed(6),
-
-            // T_cam2ct:
-            T_cam2ct_els[0].toFixed(6), T_cam2ct_els[4].toFixed(6), T_cam2ct_els[8].toFixed(6), T_cam2ct_els[12].toFixed(6),
-            T_cam2ct_els[1].toFixed(6), T_cam2ct_els[5].toFixed(6), T_cam2ct_els[9].toFixed(6), T_cam2ct_els[13].toFixed(6),
-            T_cam2ct_els[2].toFixed(6), T_cam2ct_els[6].toFixed(6), T_cam2ct_els[10].toFixed(6), T_cam2ct_els[14].toFixed(6),
-            T_cam2ct_els[3].toFixed(6), T_cam2ct_els[7].toFixed(6), T_cam2ct_els[11].toFixed(6), T_cam2ct_els[15].toFixed(6),
 
             // Base Tracking Metadata
             (shotControls.lift || 0).toFixed(6), (shotControls.cart_x || 0).toFixed(6), (shotControls.cart_z || 0).toFixed(6),
@@ -634,15 +650,18 @@ const App = () => {
         ];
 
         const headers = [
+            'timestamp', 'units', 'coordinate_frame', 'CT_volume_path',
+            'T_CT_to_world_m00', 'T_CT_to_world_m01', 'T_CT_to_world_m02', 'T_CT_to_world_m03',
+            'T_CT_to_world_m10', 'T_CT_to_world_m11', 'T_CT_to_world_m12', 'T_CT_to_world_m13',
+            'T_CT_to_world_m20', 'T_CT_to_world_m21', 'T_CT_to_world_m22', 'T_CT_to_world_m23',
+            'T_CT_to_world_m30', 'T_CT_to_world_m31', 'T_CT_to_world_m32', 'T_CT_to_world_m33',
+            'T_cam_to_CT_m00', 'T_cam_to_CT_m01', 'T_cam_to_CT_m02', 'T_cam_to_CT_m03',
+            'T_cam_to_CT_m10', 'T_cam_to_CT_m11', 'T_cam_to_CT_m12', 'T_cam_to_CT_m13',
+            'T_cam_to_CT_m20', 'T_cam_to_CT_m21', 'T_cam_to_CT_m22', 'T_cam_to_CT_m23',
+            'T_cam_to_CT_m30', 'T_cam_to_CT_m31', 'T_cam_to_CT_m32', 'T_cam_to_CT_m33',
+            'source_position_CT_mm_x', 'source_position_CT_mm_y', 'source_position_CT_mm_z',
+            'detector_position_CT_mm_x', 'detector_position_CT_mm_y', 'detector_position_CT_mm_z',
             'sdd_mm', 'img_width_px', 'img_height_px', 'delx_mm', 'dely_mm', 'x0_px', 'y0_px',
-            'matrix_ct2cam_00', 'matrix_ct2cam_01', 'matrix_ct2cam_02', 'matrix_ct2cam_03',
-            'matrix_ct2cam_10', 'matrix_ct2cam_11', 'matrix_ct2cam_12', 'matrix_ct2cam_13',
-            'matrix_ct2cam_20', 'matrix_ct2cam_21', 'matrix_ct2cam_22', 'matrix_ct2cam_23',
-            'matrix_ct2cam_30', 'matrix_ct2cam_31', 'matrix_ct2cam_32', 'matrix_ct2cam_33',
-            'matrix_cam2ct_00', 'matrix_cam2ct_01', 'matrix_cam2ct_02', 'matrix_cam2ct_03',
-            'matrix_cam2ct_10', 'matrix_cam2ct_11', 'matrix_cam2ct_12', 'matrix_cam2ct_13',
-            'matrix_cam2ct_20', 'matrix_cam2ct_21', 'matrix_cam2ct_22', 'matrix_cam2ct_23',
-            'matrix_cam2ct_30', 'matrix_cam2ct_31', 'matrix_cam2ct_32', 'matrix_cam2ct_33',
             'lift', 'cart_x', 'cart_z', 'orbital_slide_rad', 'wig_wag_rad', 'column_rot_rad'
         ];
 
@@ -2236,6 +2255,20 @@ const App = () => {
                             tempVec.set(0, 1, 0).applyMatrix4(beamRef.current.matrixWorld);
                             const beamBaseErr = tempVec.distanceTo(v2);
 
+                            // T_cam_to_CT calculation for debug panel
+                            const Z_c = new THREE.Vector3().subVectors(v2, v1).normalize();
+                            const X_c = new THREE.Vector3(1, 0, 0).applyQuaternion(detAnchorRef.current.quaternion).normalize();
+                            const Y_c = new THREE.Vector3().crossVectors(Z_c, X_c).normalize();
+                            X_c.crossVectors(Y_c, Z_c).normalize();
+                            const T_cam2world = new THREE.Matrix4().makeBasis(X_c, Y_c, Z_c);
+                            T_cam2world.setPosition(v1);
+                            const T_cam_to_CT_debug = new THREE.Matrix4().multiplyMatrices(T_world_to_CT, T_cam2world);
+                            const camPosCT = new THREE.Vector3().setFromMatrixPosition(T_cam_to_CT_debug);
+                            const camEulerCT = new THREE.Euler().setFromRotationMatrix(T_cam_to_CT_debug);
+
+                            const ctOriginWorld = new THREE.Vector3().setFromMatrixPosition(T_CT_to_world);
+                            const ctDet = T_CT_to_world.determinant();
+
                             setDebugReadout({
                                 src: v1.toArray().map(n => n.toFixed(3)),
                                 det: v2.toArray().map(n => n.toFixed(3)),
@@ -2248,7 +2281,11 @@ const App = () => {
                                 beamErr: beamBaseErr.toFixed(3),
                                 beamRegion: zoneResult.label,
                                 hitStatus: isHitting ? "HIT" : "MISS",
-                                normY: beamNormYRef.current || "NA"
+                                normY: beamNormYRef.current || "NA",
+                                ctOriginWorld: ctOriginWorld.toArray().map(n => n.toFixed(3)),
+                                ctDet: ctDet.toFixed(3),
+                                camPosCT: camPosCT.toArray().map(n => n.toFixed(3)),
+                                camEulerCT: [camEulerCT.x, camEulerCT.y, camEulerCT.z].map(n => (n * 180 / Math.PI).toFixed(1))
                             });
                         }
                     }
@@ -2539,6 +2576,11 @@ const App = () => {
                     <div>SRC: [{debugReadout.src.join(', ')}]</div>
                     <div>DET: [{debugReadout.det.join(', ')}]</div>
                     <div>SID: {debugReadout.sid} m</div>
+                    <hr style={{ borderColor: '#444', margin: '5px 0' }} />
+                    <div style={{ color: '#ffb3ba' }}>CT Origin World: [{debugReadout.ctOriginWorld.join(', ')}]</div>
+                    <div style={{ color: '#ffb3ba' }}>CT Det Check: {debugReadout.ctDet}</div>
+                    <div style={{ color: '#baffc9' }}>Cam CT Pos: [{debugReadout.camPosCT.join(', ')}]</div>
+                    <div style={{ color: '#baffc9' }}>Cam CT Euler: [{debugReadout.camEulerCT.join(', ')}°]</div>
                     <hr style={{ borderColor: '#444', margin: '5px 0' }} />
                     <div>MidToIso: {debugReadout.midToIso} m</div>
                     <div style={{ color: '#fff' }}>IsoRay: {debugReadout.isoRay} m</div>
