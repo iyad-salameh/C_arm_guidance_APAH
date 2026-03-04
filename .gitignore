@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Large Medical Imaging Files (to prevent 100MB+ limit issues)
+*.nii
+*.nii.gz
+*.nrrd
+*.mhd
+*.mha
+
