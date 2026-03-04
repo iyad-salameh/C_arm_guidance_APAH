@@ -620,7 +620,7 @@ const App = () => {
         const timestamp_iso = new Date().toISOString();
         const units = "mm";
         const coordinate_frame = "CT";
-        const ct_volume_path = "public/CT/case-112016_BONE_H-N-UXT_3X3.nii.gz";
+        const ct_volume_path = "C:/Users/iyad/Documents/Github/c-arm/CT/case-112016_BONE_H-N-UXT_3X3.nii";
 
         const row = [
             timestamp_iso, units, coordinate_frame, ct_volume_path,
