@@ -566,6 +566,9 @@ const App = () => {
         srcAnchorRef.current.updateMatrixWorld(true);
         detAnchorRef.current.updateMatrixWorld(true);
 
+        // 3. CT mapping (Ensuring fresh update)
+        if (ctGroupRef.current) ctGroupRef.current.updateMatrixWorld(true);
+
         const srcPos = new THREE.Vector3();
         srcAnchorRef.current.getWorldPosition(srcPos);
 
@@ -625,7 +628,8 @@ const App = () => {
         if (dotXY > 1e-4 || dotYZ > 1e-4 || dotZX > 1e-4) {
             console.warn("Exporter Warning: Camera basis is not orthogonal!", { dotXY, dotYZ, dotZX });
         }
-        const detR = new THREE.Matrix3().setFromMatrix4(T_cam2world).determinant();
+        const R = new THREE.Matrix3().setFromMatrix4(T_cam2world);
+        const detR = R.determinant();
         if (Math.abs(detR - 1.0) > 1e-4) {
             console.warn("Exporter Warning: Camera basis is NOT right-handed! det(R) =", detR);
         }
@@ -2280,22 +2284,40 @@ const App = () => {
                             tempVec.set(0, 1, 0).applyMatrix4(beamRef.current.matrixWorld);
                             const beamBaseErr = tempVec.distanceTo(v2);
 
-                            // T_cam_to_CT calculation for debug panel
-                            const T_CT_to_world = ctGroupRef.current ? ctGroupRef.current.matrixWorld.clone() : new THREE.Matrix4().identity();
-                            const T_world_to_CT = T_CT_to_world.clone().invert();
+                            // T_cam_to_CT calculation for debug panel (MATCH EXPORTER)
+                            const T_CT_to_world_dbg = ctGroupRef.current ? ctGroupRef.current.matrixWorld.clone() : new THREE.Matrix4().identity();
+                            const T_world_to_CT_dbg = T_CT_to_world_dbg.clone().invert();
 
-                            const Z_c = new THREE.Vector3().subVectors(v2, v1).normalize();
-                            const X_c = new THREE.Vector3(1, 0, 0).applyQuaternion(detAnchorRef.current.quaternion).normalize();
-                            const Y_c = new THREE.Vector3().crossVectors(Z_c, X_c).normalize();
-                            X_c.crossVectors(Y_c, Z_c).normalize();
-                            const T_cam2world = new THREE.Matrix4().makeBasis(X_c, Y_c, Z_c);
-                            T_cam2world.setPosition(v1);
-                            const T_cam_to_CT_debug = new THREE.Matrix4().multiplyMatrices(T_world_to_CT, T_cam2world);
+                            // Use WORLD quaternion for detector anchor (not local)
+                            const detQuatW = new THREE.Quaternion();
+                            detAnchorRef.current.getWorldQuaternion(detQuatW);
+
+                            // Camera basis
+                            const Z_c = new THREE.Vector3().subVectors(v2, v1).normalize(); // src->det (forward)
+                            let X_det = new THREE.Vector3(1, 0, 0).applyQuaternion(detQuatW).normalize();
+
+                            // Project X onto plane orthogonal to Z
+                            const projX = Z_c.clone().multiplyScalar(X_det.dot(Z_c));
+                            let X_c = new THREE.Vector3().subVectors(X_det, projX).normalize();
+
+                            // Y = Z x X, then re-orthonormalize X = Y x Z
+                            let Y_c = new THREE.Vector3().crossVectors(Z_c, X_c).normalize();
+                            X_c = new THREE.Vector3().crossVectors(Y_c, Z_c).normalize();
+
+                            // Enforce Y down
+                            const up = new THREE.Vector3(0, 1, 0);
+                            if (Y_c.dot(up) > 0) { X_c.negate(); Y_c.negate(); }
+
+                            const T_cam2world_dbg = new THREE.Matrix4().makeBasis(X_c, Y_c, Z_c);
+                            T_cam2world_dbg.setPosition(v1);
+
+                            const T_cam_to_CT_debug = new THREE.Matrix4().multiplyMatrices(T_world_to_CT_dbg, T_cam2world_dbg);
+
                             const camPosCT = new THREE.Vector3().setFromMatrixPosition(T_cam_to_CT_debug);
                             const camEulerCT = new THREE.Euler().setFromRotationMatrix(T_cam_to_CT_debug);
 
-                            const ctOriginWorld = new THREE.Vector3().setFromMatrixPosition(T_CT_to_world);
-                            const ctDet = T_CT_to_world.determinant();
+                            const ctOriginWorld = new THREE.Vector3().setFromMatrixPosition(T_CT_to_world_dbg);
+                            const ctDet = T_CT_to_world_dbg.determinant();
 
                             setDebugReadout({
                                 src: v1.toArray().map(n => n.toFixed(3)),
