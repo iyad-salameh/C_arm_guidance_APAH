@@ -303,6 +303,7 @@ const App = () => {
     const [beamZoneKeyUI, setBeamZoneKeyUI] = useState('miss'); // For header color
 
     const patientModelRef = useRef(null);
+    const ctGroupRef = useRef(new THREE.Group()); // NEW: Represents the canonical CT volume frame
     const patientBoundsRef = useRef({ ready: false, minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 });
 
 
@@ -558,8 +559,6 @@ const App = () => {
     // Three.js simulator world uses +Y UP. 
     // CT axis conventions are defined externally by the NIfTI affine. 
     // DiffDRR pipeline must map CT voxel coordinates to this CT frame using the NIfTI affine.
-    const T_CT_to_world = new THREE.Matrix4().identity();
-    const T_world_to_CT = T_CT_to_world.clone().invert();
 
     const captureExposureGeometry = (shotControls) => {
         if (!srcAnchorRef.current || !detAnchorRef.current) return;
@@ -584,73 +583,93 @@ const App = () => {
         const x0_px = img_width_px / 2.0;
         const y0_px = img_height_px / 2.0;
 
-        // Calculate physical pixel spacing at the detector
-        const fov_deg = depthCameraRef.current ? depthCameraRef.current.fov : 58;
-        const detector_height_m = 2.0 * sid_m * Math.tan((fov_deg / 2) * (Math.PI / 180));
-        const dely_mm = (detector_height_m / img_height_px) * 1000.0;
-        const delx_mm = dely_mm; // Assuming square pixels
+        const DETECTOR_PIXEL_SPACING_MM = 0.4;
+        const delx_mm = DETECTOR_PIXEL_SPACING_MM;
+        const dely_mm = DETECTOR_PIXEL_SPACING_MM;
 
-        // 2. Extrinsics (Camera Coordinate Frame)
-        // DiffDRR uses right-handed coordinates: +Z forward, +X right, +Y down
-        const Z_c = new THREE.Vector3().subVectors(detPos, srcPos).normalize();
+        // 2. Extrinsics (Camera Coordinate Frame from Detector)
+        const beam_dir_world = new THREE.Vector3().subVectors(detPos, srcPos).normalize(); // Z forward
+        let X_det_world = new THREE.Vector3(1, 0, 0).applyQuaternion(detQuat).normalize(); // detector right
 
-        // Let's get the absolute right direction from the detector
-        const X_c = new THREE.Vector3(1, 0, 0).applyQuaternion(detQuat).normalize();
-        // Since DiffDRR wants +X right, +Y down, +Z forward:
-        // Y_c = Z_c x X_c
-        const Y_c = new THREE.Vector3().crossVectors(Z_c, X_c).normalize();
-        // Recalculate X_c to ensure perfectly orthogonal frame
-        X_c.crossVectors(Y_c, Z_c).normalize();
+        // Project detector X onto the plane orthogonal to beam direction
+        const proj = beam_dir_world.clone().multiplyScalar(X_det_world.dot(beam_dir_world));
+        const X_cam_world = new THREE.Vector3().subVectors(X_det_world, proj).normalize();
 
-        const T_cam2world = new THREE.Matrix4().makeBasis(X_c, Y_c, Z_c);
+        // Y = Z cross X (DiffDRR convention)
+        const Y_cam_world = new THREE.Vector3().crossVectors(beam_dir_world, X_cam_world).normalize();
+
+        // Re-orthogonalize X = Y cross Z
+        X_cam_world.crossVectors(Y_cam_world, beam_dir_world).normalize();
+
+        // Enforce "Y down" relative to world up (+Y)
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        let yDownEnforced = false;
+        if (Y_cam_world.dot(worldUp) > 0) {
+            X_cam_world.negate();
+            Y_cam_world.negate();
+            yDownEnforced = true;
+        }
+
+        const T_cam2world = new THREE.Matrix4().makeBasis(X_cam_world, Y_cam_world, beam_dir_world);
         T_cam2world.setPosition(srcPos);
 
-        // Incorporate CT alignment
-        // T_cam_to_CT = T_world_to_CT * T_cam_to_world 
-        const T_cam_to_CT = new THREE.Matrix4().multiplyMatrices(T_world_to_CT, T_cam2world);
-        
-        // Convert positions from world (meters) to CT (millimeters)
-        const srcPosCT_mm = srcPos.clone().applyMatrix4(T_world_to_CT).multiplyScalar(1000.0);
-        const detPosCT_mm = detPos.clone().applyMatrix4(T_world_to_CT).multiplyScalar(1000.0);
+        // 3. CT mapping
+        const T_CT_to_world = ctGroupRef.current ? ctGroupRef.current.matrixWorld.clone() : new THREE.Matrix4().identity();
+        const T_world_to_CT = T_CT_to_world.clone().invert();
+        const T_cam_to_CT_m = new THREE.Matrix4().multiplyMatrices(T_world_to_CT, T_cam2world);
 
-        // Prepare row data
-        const T_CT_to_world_els = T_CT_to_world.elements; // Column-major array in Three.js
-        const T_cam_to_CT_els = T_cam_to_CT.elements;
+        // Sanity Checks
+        const dotXY = Math.abs(X_cam_world.dot(Y_cam_world));
+        const dotYZ = Math.abs(Y_cam_world.dot(beam_dir_world));
+        const dotZX = Math.abs(beam_dir_world.dot(X_cam_world));
+        if (dotXY > 1e-4 || dotYZ > 1e-4 || dotZX > 1e-4) {
+            console.warn("Exporter Warning: Camera basis is not orthogonal!", { dotXY, dotYZ, dotZX });
+        }
+        const detR = new THREE.Matrix3().setFromMatrix4(T_cam2world).determinant();
+        if (Math.abs(detR - 1.0) > 1e-4) {
+            console.warn("Exporter Warning: Camera basis is NOT right-handed! det(R) =", detR);
+        }
+        if (yDownEnforced) {
+            console.log("Exporter Info: Enforced Y_cam downwards relative to world Up (+Y).", { Y_dot_up: Y_cam_world.dot(worldUp) });
+        }
 
-        const timestamp_iso = new Date().toISOString();
-        const units = "mm";
-        const coordinate_frame = "CT";
-        const ct_volume_path = "C:/Users/iyad/Documents/Github/c-arm/CT/case-112016_BONE_H-N-UXT_3X3.nii";
+        // 4. Convert Translation matrix to millimeters for DiffDRR
+        const T_CT_to_world_mm = T_CT_to_world.clone();
+        const T_cam_to_CT_mm = T_cam_to_CT_m.clone();
+
+        let p = new THREE.Vector3().setFromMatrixPosition(T_CT_to_world_mm);
+        p.multiplyScalar(1000);
+        T_CT_to_world_mm.setPosition(p);
+
+        let q = new THREE.Vector3().setFromMatrixPosition(T_cam_to_CT_mm);
+        q.multiplyScalar(1000);
+        T_cam_to_CT_mm.setPosition(q);
+
+        // 5. Data Export (Row-Major)
+        const eCT = T_CT_to_world_mm.elements; // Column-major array in Three.js
+        const eCam = T_cam_to_CT_mm.elements;
+
+        const ct_volume_path = "public/CT/case-112016_BONE_H-N-UXT_3X3.nii";
 
         const row = [
-            timestamp_iso, units, coordinate_frame, ct_volume_path,
+            ct_volume_path,
+            img_width_px, img_height_px, sdd_mm.toFixed(6), delx_mm.toFixed(6), dely_mm.toFixed(6), x0_px.toFixed(6), y0_px.toFixed(6),
 
-            // T_CT_to_world (Row-Major format)
-            T_CT_to_world_els[0].toFixed(6), T_CT_to_world_els[4].toFixed(6), T_CT_to_world_els[8].toFixed(6), T_CT_to_world_els[12].toFixed(6),
-            T_CT_to_world_els[1].toFixed(6), T_CT_to_world_els[5].toFixed(6), T_CT_to_world_els[9].toFixed(6), T_CT_to_world_els[13].toFixed(6),
-            T_CT_to_world_els[2].toFixed(6), T_CT_to_world_els[6].toFixed(6), T_CT_to_world_els[10].toFixed(6), T_CT_to_world_els[14].toFixed(6),
-            T_CT_to_world_els[3].toFixed(6), T_CT_to_world_els[7].toFixed(6), T_CT_to_world_els[11].toFixed(6), T_CT_to_world_els[15].toFixed(6),
+            // T_CT_to_world_mm (Row-Major format)
+            eCT[0].toFixed(6), eCT[4].toFixed(6), eCT[8].toFixed(6), eCT[12].toFixed(6),
+            eCT[1].toFixed(6), eCT[5].toFixed(6), eCT[9].toFixed(6), eCT[13].toFixed(6),
+            eCT[2].toFixed(6), eCT[6].toFixed(6), eCT[10].toFixed(6), eCT[14].toFixed(6),
+            eCT[3].toFixed(6), eCT[7].toFixed(6), eCT[11].toFixed(6), eCT[15].toFixed(6),
 
-            // T_cam_to_CT (Row-Major format)
-            T_cam_to_CT_els[0].toFixed(6), T_cam_to_CT_els[4].toFixed(6), T_cam_to_CT_els[8].toFixed(6), T_cam_to_CT_els[12].toFixed(6),
-            T_cam_to_CT_els[1].toFixed(6), T_cam_to_CT_els[5].toFixed(6), T_cam_to_CT_els[9].toFixed(6), T_cam_to_CT_els[13].toFixed(6),
-            T_cam_to_CT_els[2].toFixed(6), T_cam_to_CT_els[6].toFixed(6), T_cam_to_CT_els[10].toFixed(6), T_cam_to_CT_els[14].toFixed(6),
-            T_cam_to_CT_els[3].toFixed(6), T_cam_to_CT_els[7].toFixed(6), T_cam_to_CT_els[11].toFixed(6), T_cam_to_CT_els[15].toFixed(6),
-
-            // Source and Detector positions in CT frame (mm)
-            srcPosCT_mm.x.toFixed(6), srcPosCT_mm.y.toFixed(6), srcPosCT_mm.z.toFixed(6),
-            detPosCT_mm.x.toFixed(6), detPosCT_mm.y.toFixed(6), detPosCT_mm.z.toFixed(6),
-
-            // Image properties
-            sdd_mm.toFixed(6), img_width_px, img_height_px, delx_mm.toFixed(6), dely_mm.toFixed(6), x0_px.toFixed(6), y0_px.toFixed(6),
-
-            // Base Tracking Metadata
-            (shotControls.lift || 0).toFixed(6), (shotControls.cart_x || 0).toFixed(6), (shotControls.cart_z || 0).toFixed(6),
-            (shotControls.orbital_slide || 0).toFixed(6), (shotControls.wig_wag || 0).toFixed(6), (shotControls.column_rot || 0).toFixed(6)
+            // T_cam_to_CT_mm (Row-Major format)
+            eCam[0].toFixed(6), eCam[4].toFixed(6), eCam[8].toFixed(6), eCam[12].toFixed(6),
+            eCam[1].toFixed(6), eCam[5].toFixed(6), eCam[9].toFixed(6), eCam[13].toFixed(6),
+            eCam[2].toFixed(6), eCam[6].toFixed(6), eCam[10].toFixed(6), eCam[14].toFixed(6),
+            eCam[3].toFixed(6), eCam[7].toFixed(6), eCam[11].toFixed(6), eCam[15].toFixed(6)
         ];
 
         const headers = [
-            'timestamp', 'units', 'coordinate_frame', 'CT_volume_path',
+            'ct_path', 'img_width_px', 'img_height_px', 'sdd_mm', 'delx_mm', 'dely_mm', 'x0_px', 'y0_px',
             'T_CT_to_world_m00', 'T_CT_to_world_m01', 'T_CT_to_world_m02', 'T_CT_to_world_m03',
             'T_CT_to_world_m10', 'T_CT_to_world_m11', 'T_CT_to_world_m12', 'T_CT_to_world_m13',
             'T_CT_to_world_m20', 'T_CT_to_world_m21', 'T_CT_to_world_m22', 'T_CT_to_world_m23',
@@ -658,11 +677,7 @@ const App = () => {
             'T_cam_to_CT_m00', 'T_cam_to_CT_m01', 'T_cam_to_CT_m02', 'T_cam_to_CT_m03',
             'T_cam_to_CT_m10', 'T_cam_to_CT_m11', 'T_cam_to_CT_m12', 'T_cam_to_CT_m13',
             'T_cam_to_CT_m20', 'T_cam_to_CT_m21', 'T_cam_to_CT_m22', 'T_cam_to_CT_m23',
-            'T_cam_to_CT_m30', 'T_cam_to_CT_m31', 'T_cam_to_CT_m32', 'T_cam_to_CT_m33',
-            'source_position_CT_mm_x', 'source_position_CT_mm_y', 'source_position_CT_mm_z',
-            'detector_position_CT_mm_x', 'detector_position_CT_mm_y', 'detector_position_CT_mm_z',
-            'sdd_mm', 'img_width_px', 'img_height_px', 'delx_mm', 'dely_mm', 'x0_px', 'y0_px',
-            'lift', 'cart_x', 'cart_z', 'orbital_slide_rad', 'wig_wag_rad', 'column_rot_rad'
+            'T_cam_to_CT_m30', 'T_cam_to_CT_m31', 'T_cam_to_CT_m32', 'T_cam_to_CT_m33'
         ];
 
         exportDiffDRRCSVRow(headers, row);
@@ -1701,6 +1716,16 @@ const App = () => {
                 patientModel.position.set(0, 1.50, 0.0);
                 patientModel.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
                 bedGroup.add(patientModel);
+
+                // Align the explicit CT Group exactly with the patient model
+                if (ctGroupRef.current) {
+                    const ctGroup = ctGroupRef.current;
+                    ctGroup.position.copy(patientModel.position);
+                    ctGroup.quaternion.copy(patientModel.quaternion);
+                    ctGroup.scale.set(1, 1, 1); // rigid scale only for export mapping
+                    bedGroup.add(ctGroup);
+                    ctGroup.updateMatrixWorld(true);
+                }
             } else {
                 console.warn("Patient model failed to load:", results[0].reason);
             }
@@ -2256,6 +2281,9 @@ const App = () => {
                             const beamBaseErr = tempVec.distanceTo(v2);
 
                             // T_cam_to_CT calculation for debug panel
+                            const T_CT_to_world = ctGroupRef.current ? ctGroupRef.current.matrixWorld.clone() : new THREE.Matrix4().identity();
+                            const T_world_to_CT = T_CT_to_world.clone().invert();
+
                             const Z_c = new THREE.Vector3().subVectors(v2, v1).normalize();
                             const X_c = new THREE.Vector3(1, 0, 0).applyQuaternion(detAnchorRef.current.quaternion).normalize();
                             const Y_c = new THREE.Vector3().crossVectors(Z_c, X_c).normalize();

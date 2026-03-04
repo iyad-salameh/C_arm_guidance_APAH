@@ -7,6 +7,7 @@ import keyboardLegendImg from '../public/keyboard_legend.png';
 import debugModeImg from '../public/debugMode.png';
 import debugOverlayImg from '../public/debugOverlay.png';
 import prototypeImg from '../public/movePhysicalModel.gif';
+import usbPlugImg from '../public/usbPlug.png';
 
 const Instructions = ({ onClose }) => {
     const [page, setPage] = useState(0);
@@ -45,11 +46,11 @@ const Instructions = ({ onClose }) => {
         {
             title: "Keyboard Shortcuts",
             image: keyboardLegendImg,
-            content: "Press P to toggle Patient visibility.\nPress L to toggle skeleton landmarks.\nPress D to toggle the Debug view & floor labels.\nPress I to toggle this Instructions canvas.\nPress C to connect/disconnect the Arduino."
+            content: "Press I to toggle this Instructions canvas\n\nPress P to toggle Patient visibility\n\nPress L to toggle skeleton landmarks\n\nPress D to toggle the Debug view & floor labels\n\nPress C to connect/disconnect the External Hardware Serial"
         },
         {
             title: "Hardware Connection",
-            image: prototypeImg,
+            images: [prototypeImg, usbPlugImg],
             content: "To control the simulation using the physical C-arm prototype, connect the Arduino to your computer via a USB cable (this is a must).\n\nOnce connected via USB, press the C button on your keyboard to establish the connection."
         },
         {
