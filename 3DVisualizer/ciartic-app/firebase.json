@@ -1,6 +1,7 @@
 {
   "hosting": {
     "public": "dist",
+    "maxReleases": 2,
     "ignore": [
       "firebase.json",
       "**/.*",
