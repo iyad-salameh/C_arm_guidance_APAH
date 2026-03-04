@@ -123,7 +123,8 @@ const Instructions = ({ onClose }) => {
                 border: '1px solid rgba(255, 255, 255, 0.05)',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '24px'
+                gap: '24px',
+                opacity: 0.9
             }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h2 style={{ margin: 0, fontSize: '26px', fontWeight: '800', color: '#4a90e2', textShadow: '1px 1px 3px rgba(0,0,0,0.5)' }}>
