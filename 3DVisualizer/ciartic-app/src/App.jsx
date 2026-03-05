@@ -243,9 +243,25 @@ const classifyLocalPointBySkeleton = (pLocal, localLandmarks) => {
 
 
 // --- MAIN APP ---
+// --- CT VISUAL DEBUGGING CONSTANTS ---
+// Adjust these physical bounds to match your expected bounding box
+const CT_SIZE_X_M = 0.4;
+const CT_SIZE_Y_M = 0.4;
+const CT_SIZE_Z_M = 0.4;
+
+// Add tiny local-coordinate spheres representing specific anatomy points inside the CT frame
+const CT_LANDMARKS = {
+    head_center: new THREE.Vector3(0, 0.15, 0),
+    chest_center: new THREE.Vector3(0, 0, 0),
+    pelvis_center: new THREE.Vector3(0, -0.15, 0),
+    left_knee: new THREE.Vector3(-0.08, -0.3, 0),
+    right_knee: new THREE.Vector3(0.08, -0.3, 0)
+};
+
 const App = () => {
     const mountRef = useRef(null);
 
+    // Control States
     const [controls, setControlsRaw] = useState({
         lift: -0.178,
         column_rot: 0,
@@ -283,6 +299,13 @@ const App = () => {
     const beamActiveRef = useRef(false);
     const controlsRef = useRef(controls);
 
+    // --- CT VISUAL CALIBRATION TOGGLES ---
+    const showCtAxesRef = useRef(true);
+    const showCtBoxRef = useRef(true);
+    const showCtLandmarksRef = useRef(true);
+    const showBeamLineRef = useRef(true);
+    const showBeamIntersectRef = useRef(true);
+
     ////////////Arduino control/////////////////
 
     // --- SERIAL (ARDUINO) ---
@@ -305,6 +328,12 @@ const App = () => {
     const patientModelRef = useRef(null);
     const ctGroupRef = useRef(new THREE.Group()); // NEW: Represents the canonical CT volume frame
     const patientBoundsRef = useRef({ ready: false, minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 });
+
+    const ctAxesHelperRef = useRef(null);
+    const ctBoxMeshRef = useRef(null);
+    const ctLandmarksGroupRef = useRef(new THREE.Group());
+    const beamLineRef = useRef(null);
+    const beamIntersectGroupRef = useRef(new THREE.Group());
 
 
     ////Arduino code for sending functions////
@@ -828,6 +857,13 @@ const App = () => {
                 }
                 return;
             }
+
+            // --- DIFFDRR CT CALIBRATION TOGGLES ---
+            if (k === '1') { showCtAxesRef.current = !showCtAxesRef.current; return; }
+            if (k === '2') { showCtBoxRef.current = !showCtBoxRef.current; return; }
+            if (k === '3') { showCtLandmarksRef.current = !showCtLandmarksRef.current; return; }
+            if (k === '4') { showBeamLineRef.current = !showBeamLineRef.current; return; }
+            if (k === '5') { showBeamIntersectRef.current = !showBeamIntersectRef.current; return; }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
@@ -1574,6 +1610,53 @@ const App = () => {
         connLine.visible = false;
         scene.add(connLine);
 
+        // --- DIFFDRR CT FRAME DEBUG HELPERS ---
+        // CT Axes Helper mapped to CT Group
+        const ctAxes = new THREE.AxesHelper(0.5);
+        ctAxes.visible = false;
+        ctAxesHelperRef.current = ctAxes;
+        ctGroupRef.current.add(ctAxes);
+
+        // CT Volume Bounds (Wireframe)
+        const ctBoxGeo = new THREE.BoxGeometry(CT_SIZE_X_M, CT_SIZE_Y_M, CT_SIZE_Z_M);
+        const ctBoxMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, wireframe: true, transparent: true, opacity: 0.3 });
+        const ctBoxMesh = new THREE.Mesh(ctBoxGeo, ctBoxMat);
+        ctBoxMesh.visible = false;
+        ctBoxMeshRef.current = ctBoxMesh;
+        ctGroupRef.current.add(ctBoxMesh);
+
+        // CT Landmarks
+        ctLandmarksGroupRef.current.visible = false;
+        Object.entries(CT_LANDMARKS).forEach(([name, pt]) => {
+            const sphere = new THREE.Mesh(
+                new THREE.SphereGeometry(0.015, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0x00ffaa, depthTest: false })
+            );
+            sphere.position.copy(pt);
+            sphere.name = "landmark_" + name;
+            ctLandmarksGroupRef.current.add(sphere);
+        });
+        ctGroupRef.current.add(ctLandmarksGroupRef.current);
+
+        // Beam Center Line (Source to Detector directly)
+        const beamLineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const beamLineMat = new THREE.LineBasicMaterial({ color: 0xff8800, linewidth: 2 });
+        const beamLineMesh = new THREE.Line(beamLineGeo, beamLineMat);
+        beamLineMesh.visible = false;
+        beamLineRef.current = beamLineMesh;
+        scene.add(beamLineMesh);
+
+        // Beam Entry/Exit Markers (CT Box Intersections)
+        const entryMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, depthTest: false }); // Entry: Green
+        const exitMat = new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false }); // Exit: Red
+        const entrySphere = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), entryMat);
+        const exitSphere = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), exitMat);
+        entrySphere.name = "entry"; exitSphere.name = "exit";
+        beamIntersectGroupRef.current.add(entrySphere);
+        beamIntersectGroupRef.current.add(exitSphere);
+        beamIntersectGroupRef.current.visible = false;
+        scene.add(beamIntersectGroupRef.current);
+
         // --- SKELETON DEBUG GROUP ---
         const skelGroup = new THREE.Group();
         skelGroup.visible = false; // Managed manually
@@ -2070,6 +2153,84 @@ const App = () => {
                     beamRef.current.quaternion.setFromUnitVectors(yAxis, dir);
                     beamRef.current.scale.set(0.2, sid, 0.2);
 
+                    // --- DIFFDRR CT FRAME VISUAL UPDATES ---
+                    if (ctAxesHelperRef.current) ctAxesHelperRef.current.visible = debugEnabledRef.current && showCtAxesRef.current;
+                    if (ctBoxMeshRef.current) ctBoxMeshRef.current.visible = debugEnabledRef.current && showCtBoxRef.current;
+                    if (ctLandmarksGroupRef.current) ctLandmarksGroupRef.current.visible = debugEnabledRef.current && showCtLandmarksRef.current;
+
+                    let ctHitEntryLocalText = "N/A";
+                    let ctHitExitLocalText = "N/A";
+                    let ctHitStatus = "NO";
+
+                    if (beamLineRef.current) {
+                        beamLineRef.current.visible = debugEnabledRef.current && showBeamLineRef.current;
+                        if (beamLineRef.current.visible) {
+                            const positions = beamLineRef.current.geometry.attributes.position.array;
+                            v1.toArray(positions, 0);
+                            v2.toArray(positions, 3);
+                            beamLineRef.current.geometry.attributes.position.needsUpdate = true;
+                        }
+                    }
+
+                    if (beamIntersectGroupRef.current && ctGroupRef.current) {
+                        beamIntersectGroupRef.current.visible = debugEnabledRef.current && showBeamIntersectRef.current;
+
+                        // We must always calculate strings for UI even if markers are hidden
+                        ctGroupRef.current.updateMatrixWorld(true);
+
+                        const ctLocalV1 = v1.clone();
+                        ctGroupRef.current.worldToLocal(ctLocalV1);
+
+                        const ctLocalV2 = v2.clone();
+                        ctGroupRef.current.worldToLocal(ctLocalV2);
+
+                        const ctLocalDir = new THREE.Vector3().subVectors(ctLocalV2, ctLocalV1);
+                        const ctLocalSid = ctLocalDir.length();
+                        ctLocalDir.normalize();
+
+                        const ctRayLocal = new THREE.Ray(ctLocalV1, ctLocalDir);
+                        const halfX = CT_SIZE_X_M / 2.0;
+                        const halfY = CT_SIZE_Y_M / 2.0;
+                        const halfZ = CT_SIZE_Z_M / 2.0;
+                        const ctLocalBox = new THREE.Box3(
+                            new THREE.Vector3(-halfX, -halfY, -halfZ),
+                            new THREE.Vector3(halfX, halfY, halfZ)
+                        );
+
+                        const ctHitEntryLocal = new THREE.Vector3();
+                        const hitResult = ctRayLocal.intersectBox(ctLocalBox, ctHitEntryLocal);
+
+                        const entrySphere = beamIntersectGroupRef.current.children.find(c => c.name === 'entry');
+                        const exitSphere = beamIntersectGroupRef.current.children.find(c => c.name === 'exit');
+
+                        if (hitResult && ctHitEntryLocal.distanceTo(ctLocalV1) <= ctLocalSid) {
+                            ctHitStatus = "YES";
+                            ctHitEntryLocalText = ctHitEntryLocal.toArray().map(n => n.toFixed(3)).join(", ");
+
+                            const ctHitExitLocal = new THREE.Vector3();
+                            const ctRayLocalReverse = new THREE.Ray(ctLocalV2, ctLocalDir.clone().negate());
+                            const hitExitResult = ctRayLocalReverse.intersectBox(ctLocalBox, ctHitExitLocal);
+                            if (!hitExitResult) ctHitExitLocal.copy(ctHitEntryLocal);
+
+                            ctHitExitLocalText = ctHitExitLocal.toArray().map(n => n.toFixed(3)).join(", ");
+
+                            if (beamIntersectGroupRef.current.visible) {
+                                const wEntry = ctHitEntryLocal.clone();
+                                ctGroupRef.current.localToWorld(wEntry);
+                                entrySphere.position.copy(wEntry);
+                                entrySphere.visible = true;
+
+                                const wExit = ctHitExitLocal.clone();
+                                ctGroupRef.current.localToWorld(wExit);
+                                exitSphere.position.copy(wExit);
+                                exitSphere.visible = true;
+                            }
+                        } else {
+                            if (entrySphere) entrySphere.visible = false;
+                            if (exitSphere) exitSphere.visible = false;
+                        }
+                    }
+
 
                     // --- DEBUG UPDATE ---
                     if (debugEnabledRef.current) {
@@ -2326,7 +2487,10 @@ const App = () => {
                                 ctOriginWorld: ctOriginWorld.toArray().map(n => n.toFixed(3)),
                                 ctDet: ctDet.toFixed(3),
                                 camPosCT: camPosCT.toArray().map(n => n.toFixed(3)),
-                                camEulerCT: [camEulerCT.x, camEulerCT.y, camEulerCT.z].map(n => (n * 180 / Math.PI).toFixed(1))
+                                camEulerCT: [camEulerCT.x, camEulerCT.y, camEulerCT.z].map(n => (n * 180 / Math.PI).toFixed(1)),
+                                ctHitStatus: ctHitStatus,
+                                ctHitEntry: ctHitEntryLocalText,
+                                ctHitExit: ctHitExitLocalText
                             });
                         }
                     }
@@ -2622,6 +2786,9 @@ const App = () => {
                     <div style={{ color: '#ffb3ba' }}>CT Det Check: {debugReadout.ctDet}</div>
                     <div style={{ color: '#baffc9' }}>Cam CT Pos: [{debugReadout.camPosCT.join(', ')}]</div>
                     <div style={{ color: '#baffc9' }}>Cam CT Euler: [{debugReadout.camEulerCT.join(', ')}°]</div>
+                    <div style={{ color: '#ffffaa' }}>CT Box Hit: {debugReadout.ctHitStatus}</div>
+                    <div style={{ color: '#ffffaa' }}>CT Box Entry: [{debugReadout.ctHitEntry}]</div>
+                    <div style={{ color: '#ffffaa' }}>CT Box Exit: [{debugReadout.ctHitExit}]</div>
                     <hr style={{ borderColor: '#444', margin: '5px 0' }} />
                     <div>MidToIso: {debugReadout.midToIso} m</div>
                     <div style={{ color: '#fff' }}>IsoRay: {debugReadout.isoRay} m</div>
