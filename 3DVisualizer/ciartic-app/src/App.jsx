@@ -657,27 +657,17 @@ const App = () => {
 
         const row = [
             ct_volume_path,
-            img_width_px, img_height_px, sdd_mm.toFixed(6), delx_mm.toFixed(6), dely_mm.toFixed(6), x0_px.toFixed(6), y0_px.toFixed(6),
-
-            // T_CT_to_world_mm (Row-Major format)
-            eCT[0].toFixed(6), eCT[4].toFixed(6), eCT[8].toFixed(6), eCT[12].toFixed(6),
-            eCT[1].toFixed(6), eCT[5].toFixed(6), eCT[9].toFixed(6), eCT[13].toFixed(6),
-            eCT[2].toFixed(6), eCT[6].toFixed(6), eCT[10].toFixed(6), eCT[14].toFixed(6),
-            eCT[3].toFixed(6), eCT[7].toFixed(6), eCT[11].toFixed(6), eCT[15].toFixed(6),
+            img_width_px, img_height_px, sdd_mm, delx_mm, dely_mm, x0_px, y0_px,
 
             // T_cam_to_CT_mm (Row-Major format)
-            eCam[0].toFixed(6), eCam[4].toFixed(6), eCam[8].toFixed(6), eCam[12].toFixed(6),
-            eCam[1].toFixed(6), eCam[5].toFixed(6), eCam[9].toFixed(6), eCam[13].toFixed(6),
-            eCam[2].toFixed(6), eCam[6].toFixed(6), eCam[10].toFixed(6), eCam[14].toFixed(6),
-            eCam[3].toFixed(6), eCam[7].toFixed(6), eCam[11].toFixed(6), eCam[15].toFixed(6)
+            eCam[0], eCam[4], eCam[8], eCam[12],
+            eCam[1], eCam[5], eCam[9], eCam[13],
+            eCam[2], eCam[6], eCam[10], eCam[14],
+            eCam[3], eCam[7], eCam[11], eCam[15]
         ];
 
         const headers = [
             'ct_path', 'img_width_px', 'img_height_px', 'sdd_mm', 'delx_mm', 'dely_mm', 'x0_px', 'y0_px',
-            'T_CT_to_world_m00', 'T_CT_to_world_m01', 'T_CT_to_world_m02', 'T_CT_to_world_m03',
-            'T_CT_to_world_m10', 'T_CT_to_world_m11', 'T_CT_to_world_m12', 'T_CT_to_world_m13',
-            'T_CT_to_world_m20', 'T_CT_to_world_m21', 'T_CT_to_world_m22', 'T_CT_to_world_m23',
-            'T_CT_to_world_m30', 'T_CT_to_world_m31', 'T_CT_to_world_m32', 'T_CT_to_world_m33',
             'T_cam_to_CT_m00', 'T_cam_to_CT_m01', 'T_cam_to_CT_m02', 'T_cam_to_CT_m03',
             'T_cam_to_CT_m10', 'T_cam_to_CT_m11', 'T_cam_to_CT_m12', 'T_cam_to_CT_m13',
             'T_cam_to_CT_m20', 'T_cam_to_CT_m21', 'T_cam_to_CT_m22', 'T_cam_to_CT_m23',
@@ -688,7 +678,8 @@ const App = () => {
     };
 
     const exportDiffDRRCSVRow = (headers, row) => {
-        const csvContent = headers.join(',') + '\n' + row.join(',');
+        const fmt = (v) => (typeof v === "number" ? v.toFixed(6) : String(v));
+        const csvContent = headers.join(',') + '\n' + row.map(fmt).join(',');
 
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
@@ -698,7 +689,7 @@ const App = () => {
         const now = new Date();
         const pad = (n) => n.toString().padStart(2, '0');
         const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-        link.setAttribute('download', `diffdrr_exposure_${timestamp}.csv`);
+        link.download = `diffdrr_pose_${timestamp}.csv`;
 
         document.body.appendChild(link);
         link.click();
