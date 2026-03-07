@@ -241,6 +241,103 @@ const classifyLocalPointBySkeleton = (pLocal, localLandmarks) => {
     return { zone: bestZone, d2: bestD2, edge: bestEdgeName };
 };
 
+const _localV1 = new THREE.Vector3();
+const _localV2 = new THREE.Vector3();
+const _localDir = new THREE.Vector3();
+const _localBox = new THREE.Box3();
+const _entryLocal = new THREE.Vector3();
+const _exitLocal = new THREE.Vector3();
+const _rayLocal = new THREE.Ray();
+const _tempVec = new THREE.Vector3();
+const _sampleLocal = new THREE.Vector3();
+
+const computeBeamClassification = (srcPosWorld, detPosWorld, patientModel, bounds) => {
+    let zoneResult = ZONE_DEFS.miss;
+    let isHitting = false;
+    let normInfo = null;
+
+    if (!patientModel || !bounds || !bounds.ready) {
+        return { hit: isHitting, zone: zoneResult, zoneKey: zoneResult.key, zoneLabel: zoneResult.label, normInfo };
+    }
+
+    patientModel.updateMatrixWorld(true);
+
+    _localV1.copy(srcPosWorld);
+    patientModel.worldToLocal(_localV1);
+
+    _localV2.copy(detPosWorld);
+    patientModel.worldToLocal(_localV2);
+
+    _localDir.subVectors(_localV2, _localV1);
+    const localSid = _localDir.length();
+    _localDir.normalize();
+    _rayLocal.set(_localV1, _localDir);
+
+    _localBox.min.set(bounds.minX, bounds.minY, bounds.minZ);
+    _localBox.max.set(bounds.maxX, bounds.maxY, bounds.maxZ);
+
+    const hitEntry = _rayLocal.intersectBox(_localBox, _entryLocal);
+
+    if (hitEntry) {
+        const distEntry = _entryLocal.distanceTo(_localV1);
+        if (distEntry <= localSid) {
+            isHitting = true;
+
+            _tempVec.copy(_localDir).multiplyScalar(-1);
+            _rayLocal.set(_localV2, _tempVec);
+            const hitExit = _rayLocal.intersectBox(_localBox, _exitLocal);
+            if (!hitExit) _exitLocal.copy(_entryLocal);
+
+            const distExitFromDet = _exitLocal.distanceTo(_localV2);
+            const tEntry = distEntry / localSid;
+            const tExit = 1.0 - (distExitFromDet / localSid);
+            const tStart = Math.max(0, tEntry);
+            const tEnd = Math.min(1, tExit);
+
+            if (tEnd > tStart) {
+                const SAMPLES = 9;
+                const counts = Object.create(null);
+                let bestSampleEdge = "";
+                let bestSampleD2 = Infinity;
+
+                const axes = getInferredPatientAxes(bounds);
+                const localLandmarks = {};
+                Object.keys(LANDMARKS_NORM).forEach(key => {
+                    localLandmarks[key] = landmarkLocal(key, bounds, axes);
+                });
+
+                for (let i = 0; i < SAMPLES; i++) {
+                    const t = (SAMPLES > 1) ? (tStart + (tEnd - tStart) * (i / (SAMPLES - 1))) : (tStart + tEnd) * 0.5;
+                    _sampleLocal.copy(_localDir).multiplyScalar(t * localSid).add(_localV1);
+
+                    const res = classifyLocalPointBySkeleton(_sampleLocal, localLandmarks);
+
+                    const weight = 1.0 / (res.d2 + 1e-4);
+                    counts[res.zone.key] = (counts[res.zone.key] || 0) + weight;
+
+                    if (res.d2 < bestSampleD2) {
+                        bestSampleD2 = res.d2;
+                        bestSampleEdge = res.edge;
+                    }
+                }
+
+                let bestKey = 'miss';
+                let bestWeight = -1;
+                for (const key in counts) {
+                    if (counts[key] > bestWeight) {
+                        bestWeight = counts[key];
+                        bestKey = key;
+                    }
+                }
+                zoneResult = ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
+                normInfo = `${bestSampleEdge} d:${Math.sqrt(bestSampleD2).toFixed(3)}`;
+            }
+        }
+    }
+
+    return { hit: isHitting, zone: zoneResult, zoneKey: zoneResult.key, zoneLabel: zoneResult.label, normInfo };
+};
+
 
 // --- MAIN APP ---
 // --- CT VISUAL DEBUGGING CONSTANTS ---
@@ -728,7 +825,18 @@ const App = () => {
 
     const handleTakeXray = () => {
         const shotControls = { ...controls };
-        const regionKeyAtShot = beamHitRef.current ? beamZoneKeyRef.current : "miss";
+
+        let regionKeyAtShot = "miss";
+        if (srcAnchorRef.current && detAnchorRef.current) {
+            srcAnchorRef.current.updateMatrixWorld(true);
+            detAnchorRef.current.updateMatrixWorld(true);
+            const wSrc = new THREE.Vector3();
+            const wDet = new THREE.Vector3();
+            srcAnchorRef.current.getWorldPosition(wSrc);
+            detAnchorRef.current.getWorldPosition(wDet);
+            const classification = computeBeamClassification(wSrc, wDet, patientModelRef.current, patientBoundsRef.current);
+            regionKeyAtShot = classification.hit ? classification.zoneKey : "miss";
+        }
 
         captureExposureGeometry(shotControls);
 
@@ -2121,14 +2229,7 @@ const App = () => {
 
 
         // --- NEW PRE-ALLOCATIONS FOR ROBUST ZONING ---
-        const localV1 = new THREE.Vector3();
-        const localV2 = new THREE.Vector3();
-        const localDir = new THREE.Vector3();
-        const localBox = new THREE.Box3();
-        const entryLocal = new THREE.Vector3();
-        const exitLocal = new THREE.Vector3();
-        const rayLocal = new THREE.Ray();
-        const sampleLocal = new THREE.Vector3(); // Reused for sampling
+        // (Moved to top-level computeBeamClassification)
 
         let reqId;
         const animate = () => {
@@ -2270,101 +2371,22 @@ const App = () => {
                         lastDebugUpdateRef.current = now;
 
                         // --- 1. ALWAYS COMPUTE BEAM REGION (Physics) ---
-                        const bounds = patientBoundsRef.current;
-                        let zoneResult = ZONE_DEFS.miss;
-                        let isHitting = false;
-
-                        if (patientModelRef.current && bounds.ready) {
-                            // --- OBB-STYLE INTERSECTION (Patient Local Space) ---
-                            patientModelRef.current.updateMatrixWorld(true);
-
-                            localV1.copy(v1); // SRC
-                            patientModelRef.current.worldToLocal(localV1);
-
-                            localV2.copy(v2); // DET
-                            patientModelRef.current.worldToLocal(localV2);
-
-                            localDir.subVectors(localV2, localV1);
-                            const localSid = localDir.length();
-                            localDir.normalize();
-                            rayLocal.set(localV1, localDir);
-
-                            localBox.min.set(bounds.minX, bounds.minY, bounds.minZ);
-                            localBox.max.set(bounds.maxX, bounds.maxY, bounds.maxZ);
-
-                            const hitEntry = rayLocal.intersectBox(localBox, entryLocal);
-
-                            if (hitEntry) {
-                                const distEntry = entryLocal.distanceTo(localV1);
-                                if (distEntry <= localSid) {
-                                    isHitting = true;
-
-                                    tempVec.copy(localDir).multiplyScalar(-1);
-                                    rayLocal.set(localV2, tempVec);
-                                    const hitExit = rayLocal.intersectBox(localBox, exitLocal);
-                                    if (!hitExit) exitLocal.copy(entryLocal);
-
-                                    const distExitFromDet = exitLocal.distanceTo(localV2);
-                                    const tEntry = distEntry / localSid;
-                                    const tExit = 1.0 - (distExitFromDet / localSid);
-                                    const tStart = Math.max(0, tEntry);
-                                    const tEnd = Math.min(1, tExit);
-
-                                    if (tEnd > tStart) {
-                                        // --- MULTI-POINT SAMPLING (STRICT SKELETON) ---
-                                        const SAMPLES = 9;
-                                        const counts = Object.create(null);
-                                        let bestSampleEdge = "";
-                                        let bestSampleD2 = Infinity;
-
-                                        // 1. Build Local Landmarks (With Offsets)
-                                        const axes = getInferredPatientAxes(bounds);
-                                        const localLandmarks = {};
-                                        Object.keys(LANDMARKS_NORM).forEach(key => {
-                                            localLandmarks[key] = landmarkLocal(key, bounds, axes);
-                                        });
-
-                                        for (let i = 0; i < SAMPLES; i++) {
-                                            const t = (SAMPLES > 1) ? (tStart + (tEnd - tStart) * (i / (SAMPLES - 1))) : (tStart + tEnd) * 0.5;
-                                            sampleLocal.copy(localDir).multiplyScalar(t * localSid).add(localV1);
-
-                                            // 2. Classify
-                                            const res = classifyLocalPointBySkeleton(sampleLocal, localLandmarks);
-
-                                            // 3. Vote (Weight = 1 / d^2)
-                                            const weight = 1.0 / (res.d2 + 1e-4);
-                                            counts[res.zone.key] = (counts[res.zone.key] || 0) + weight;
-
-                                            if (res.d2 < bestSampleD2) {
-                                                bestSampleD2 = res.d2;
-                                                bestSampleEdge = res.edge;
-                                            }
-                                        }
-
-                                        // Pick Winner
-                                        let bestKey = 'miss';
-                                        let bestWeight = -1;
-                                        for (const key in counts) {
-                                            if (counts[key] > bestWeight) {
-                                                bestWeight = counts[key];
-                                                bestKey = key;
-                                            }
-                                        }
-                                        zoneResult = ZONE_DEFS[bestKey] || ZONE_DEFS.miss;
-                                        beamNormYRef.current = `${bestSampleEdge} d:${Math.sqrt(bestSampleD2).toFixed(3)}`;
-                                    }
-                                }
-                            }
-                        }
+                        const classification = computeBeamClassification(
+                            v1,
+                            v2,
+                            patientModelRef.current,
+                            patientBoundsRef.current
+                        );
+                        const bounds = patientBoundsRef.current; // Needed for visuals later
 
                         // Update Refs & UI
-                        beamZoneKeyRef.current = zoneResult.key;
-                        beamRegionRef.current = zoneResult.label;
-                        beamHitRef.current = isHitting;
-                        if (!isHitting) beamNormYRef.current = null;
+                        beamZoneKeyRef.current = classification.zoneKey;
+                        beamRegionRef.current = classification.zoneLabel;
+                        beamHitRef.current = classification.hit;
+                        beamNormYRef.current = classification.normInfo;
 
-                        setBeamRegionUI(zoneResult.label);
-                        setBeamZoneKeyUI(zoneResult.key);
+                        setBeamRegionUI(classification.zoneLabel);
+                        setBeamZoneKeyUI(classification.zoneKey);
 
                         // --- UPDATE SKELETON DEBUG VISUALS (Always update for Depth View) ---
                         if (skeletonDebugRef.current) {
@@ -2481,8 +2503,8 @@ const App = () => {
                                 t: t.toFixed(3),
                                 beamAngle: angleDeg.toFixed(3),
                                 beamErr: beamBaseErr.toFixed(3),
-                                beamRegion: zoneResult.label,
-                                hitStatus: isHitting ? "HIT" : "MISS",
+                                beamRegion: classification.zoneLabel,
+                                hitStatus: classification.hit ? "HIT" : "MISS",
                                 normY: beamNormYRef.current || "NA",
                                 ctOriginWorld: ctOriginWorld.toArray().map(n => n.toFixed(3)),
                                 ctDet: ctDet.toFixed(3),
